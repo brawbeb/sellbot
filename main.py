@@ -65,21 +65,32 @@ async def get_about_text():
 async def set_about_text(text):
     await redis_client.set("global:about", text)
 
-# ----- Разделы (категории) -----
-async def get_seller_sections(seller_id):
-    return await redis_client.smembers(f"seller:{seller_id}:sections")
+# ----- Разделы (категории) – только один раздел на продавца -----
+async def get_seller_section(seller_id):
+    return await redis_client.get(f"seller:{seller_id}:section")
 
-async def add_seller_section(seller_id, section_name):
-    await redis_client.sadd(f"seller:{seller_id}:sections", section_name)
+async def set_seller_section(seller_id, section_name):
+    await redis_client.set(f"seller:{seller_id}:section", section_name)
 
-async def remove_seller_section(seller_id, section_name):
-    await redis_client.srem(f"seller:{seller_id}:sections", section_name)
-    # Удаляем товары этого раздела
+async def delete_seller_section(seller_id):
+    # Удаляем все товары этого продавца
     product_ids = await redis_client.smembers(f"seller:{seller_id}:products")
     for pid in product_ids:
-        prod = await get_product(int(pid))
-        if prod and prod.get('section') == section_name:
-            await delete_product(int(pid))
+        await delete_product(int(pid))
+    await redis_client.delete(f"seller:{seller_id}:section")
+
+async def rename_seller_section(seller_id, new_name):
+    old_section = await get_seller_section(seller_id)
+    if not old_section:
+        return False
+    await set_seller_section(seller_id, new_name)
+    # Обновляем раздел у всех товаров продавца
+    product_ids = await redis_client.smembers(f"seller:{seller_id}:products")
+    for pid in product_ids:
+        product = await get_product(int(pid))
+        if product:
+            await update_product(int(pid), section=new_name)
+    return True
 
 # ----- Товары (с привязкой к разделу) -----
 async def add_product(seller_id, name, price, description, section):
@@ -99,7 +110,14 @@ async def add_product(seller_id, name, price, description, section):
 
 async def get_product(product_id):
     data = await redis_client.get(f"product:{product_id}")
-    return json.loads(data) if data else None
+    if not data:
+        return None
+    product = json.loads(data)
+    # Совместимость со старыми товарами, где нет section
+    if 'section' not in product:
+        product['section'] = "Без раздела"
+        await redis_client.set(f"product:{product_id}", json.dumps(product))
+    return product
 
 async def update_product(product_id, **fields):
     product = await get_product(product_id)
@@ -130,8 +148,9 @@ async def get_all_products():
     keys = await redis_client.keys("product:*")
     products = []
     for key in keys:
-        p = json.loads(await redis_client.get(key))
-        products.append(p)
+        p = await get_product(int(key.split(":")[1]))
+        if p:
+            products.append(p)
     return products
 
 async def get_products_by_section(seller_id, section):
@@ -161,7 +180,6 @@ async def send_main_keyboard(update: Update, text: str):
     user_id = update.effective_user.id
     seller_status = await is_seller(user_id)
     if seller_status:
-        # Клавиатура для продавца
         keyboard = [
             [KeyboardButton("📂 Все категории")],
             [KeyboardButton("🛒 Наличие товаров")],
@@ -170,7 +188,6 @@ async def send_main_keyboard(update: Update, text: str):
             [KeyboardButton("ℹ️ О магазине"), KeyboardButton("👤 Профиль"), KeyboardButton("🆘 Помощь")]
         ]
     else:
-        # Клавиатура для обычного пользователя (по скриншоту)
         keyboard = [
             [KeyboardButton("📂 Все категории")],
             [KeyboardButton("🛒 Наличие товаров")],
@@ -242,7 +259,7 @@ async def my_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ Вы не являетесь продавцом.")
         return
     keyboard = [
-        [InlineKeyboardButton("📂 Управление разделами", callback_data="manage_sections")],
+        [InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")],
         [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
     ]
@@ -256,16 +273,16 @@ async def manage_sections_callback(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    sections = await get_seller_sections(user_id)
-    if not sections:
-        text = "У вас пока нет разделов. Создайте первый раздел через кнопку ниже."
+    section = await get_seller_section(user_id)
+    if not section:
+        text = "У вас пока нет раздела. Создайте раздел (название раздела, например «Megarush», «Del1ght»):"
         keyboard = [[InlineKeyboardButton("➕ Создать раздел", callback_data="add_section")]]
     else:
-        text = "📂 **Ваши разделы:**\nВыберите раздел для просмотра товаров или создайте новый."
-        keyboard = []
-        for sec in sections:
-            keyboard.append([InlineKeyboardButton(f"📁 {sec}", callback_data=f"view_section_{sec}")])
-        keyboard.append([InlineKeyboardButton("➕ Создать раздел", callback_data="add_section")])
+        text = f"📂 **Ваш раздел:** `{section}`\n\nВы можете изменить название или удалить раздел (все товары внутри будут удалены)."
+        keyboard = [
+            [InlineKeyboardButton("✏️ Изменить название", callback_data="rename_section")],
+            [InlineKeyboardButton("❌ Удалить раздел", callback_data="delete_section")],
+        ]
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_my_products")])
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -273,7 +290,7 @@ async def add_section_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     context.user_data['awaiting_section_name'] = True
-    await query.edit_message_text("Введите **название** нового раздела (например, «Cookie», «Soft»):", parse_mode='Markdown')
+    await query.edit_message_text("Введите **название** нового раздела (например, «Megarush», «Del1ght»):", parse_mode='Markdown')
 
 async def process_section_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get('awaiting_section_name'):
@@ -283,49 +300,55 @@ async def process_section_name(update: Update, context: ContextTypes.DEFAULT_TYP
     if not section_name:
         await update.message.reply_text("❌ Название не может быть пустым.")
         return
-    await add_seller_section(user_id, section_name)
+    await set_seller_section(user_id, section_name)
     await update.message.reply_text(f"✅ Раздел «{section_name}» создан.")
     context.user_data.pop('awaiting_section_name', None)
     await manage_sections_callback(update, context)
 
-async def view_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def rename_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    section = query.data.split("_", 2)[2]
+    context.user_data['awaiting_rename_section'] = True
+    await query.edit_message_text("Введите **новое название** раздела:")
+
+async def process_rename_section(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get('awaiting_rename_section'):
+        return
+    user_id = update.effective_user.id
+    new_name = update.message.text.strip()
+    if not new_name:
+        await update.message.reply_text("❌ Название не может быть пустым.")
+        return
+    old_section = await get_seller_section(user_id)
+    if not old_section:
+        await update.message.reply_text("❌ Раздел не найден.")
+        context.user_data.pop('awaiting_rename_section', None)
+        return
+    await rename_seller_section(user_id, new_name)
+    await update.message.reply_text(f"✅ Раздел переименован из «{old_section}» в «{new_name}».")
+    context.user_data.pop('awaiting_rename_section', None)
+    await manage_sections_callback(update, context)
+
+async def delete_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     user_id = query.from_user.id
-    products = await get_products_by_section(user_id, section)
-    if not products:
-        text = f"В разделе «{section}» пока нет товаров."
-        keyboard = [[InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")]]
-    else:
-        text = f"🏷 **Товары раздела «{section}»:**\n"
-        keyboard = []
-        for p in products:
-            text += f"• {p['name']} – {p['price']} RUB\n"
-            keyboard.append([InlineKeyboardButton(f"✏️ {p['name']}", callback_data=f"edit_prod_{p['id']}")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")])
-    keyboard.append([InlineKeyboardButton("🔙 К разделам", callback_data="manage_sections")])
-    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    section = await get_seller_section(user_id)
+    if not section:
+        await query.edit_message_text("❌ Раздел не найден.")
+        return
+    await delete_seller_section(user_id)
+    await query.edit_message_text(f"✅ Раздел «{section}» удалён вместе со всеми товарами.")
+    await my_products_button(update, context)
 
 async def add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    sections = await get_seller_sections(user_id)
-    if not sections:
-        await query.edit_message_text("❌ Сначала создайте хотя бы один раздел через «Управление разделами».")
+    section = await get_seller_section(user_id)
+    if not section:
+        await query.edit_message_text("❌ Сначала создайте раздел через «Управление разделом».")
         return
-    context.user_data['awaiting_product'] = 'section'
-    keyboard = []
-    for sec in sections:
-        keyboard.append([InlineKeyboardButton(sec, callback_data=f"product_section_{sec}")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_my_products")])
-    await query.edit_message_text("Выберите **раздел**, в который добавить товар:", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def product_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    section = query.data.split("_", 2)[2]
     context.user_data['product_section'] = section
     context.user_data['awaiting_product'] = 'name'
     await query.edit_message_text("Введите **название** товара:", parse_mode='Markdown')
@@ -375,7 +398,6 @@ async def edit_product_callback(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("✏️ Название", callback_data="edit_field_name")],
         [InlineKeyboardButton("💰 Цена", callback_data="edit_field_price")],
         [InlineKeyboardButton("📝 Описание", callback_data="edit_field_desc")],
-        [InlineKeyboardButton("📂 Раздел", callback_data="edit_field_section")],
         [InlineKeyboardButton("❌ Удалить товар", callback_data="delete_product")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_my_products")]
     ])
@@ -392,38 +414,10 @@ async def edit_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("Введите новую цену (число):")
     elif field == 'desc':
         await query.edit_message_text("Введите новое описание:")
-    elif field == 'section':
-        user_id = query.from_user.id
-        sections = await get_seller_sections(user_id)
-        if not sections:
-            await query.edit_message_text("❌ У вас нет разделов. Создайте их через «Управление разделами».")
-            return
-        keyboard = []
-        for sec in sections:
-            keyboard.append([InlineKeyboardButton(sec, callback_data=f"change_section_{sec}")])
-        keyboard.append([InlineKeyboardButton("🔙 Отмена", callback_data="cancel_edit")])
-        await query.edit_message_text("Выберите новый раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
-        context.user_data['awaiting_section_change'] = True
     else:
         context.user_data['awaiting_edit_value'] = True
 
-async def change_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    new_section = query.data.split("_", 2)[2]
-    product_id = context.user_data.get('edit_product_id')
-    if product_id:
-        await update_product(product_id, section=new_section)
-        await query.edit_message_text(f"✅ Раздел изменён на «{new_section}».")
-    else:
-        await query.edit_message_text("❌ Ошибка.")
-    context.user_data.pop('awaiting_section_change', None)
-    context.user_data.pop('edit_field', None)
-    await edit_product_callback(update, context)
-
 async def process_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get('awaiting_section_change'):
-        return
     if not context.user_data.get('awaiting_edit_value'):
         return
     product_id = context.user_data.get('edit_product_id')
@@ -620,7 +614,6 @@ async def all_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not products:
         await update.message.reply_text("🛒 Пока нет товаров.")
         return
-    # Пагинация по товарам
     page = context.user_data.get('all_products_page', 0)
     total = len(products)
     start = page * PRODUCTS_PER_PAGE
@@ -771,12 +764,11 @@ async def main():
     # Колбэки
     application.add_handler(CallbackQueryHandler(manage_sections_callback, pattern="^manage_sections$"))
     application.add_handler(CallbackQueryHandler(add_section_callback, pattern="^add_section$"))
-    application.add_handler(CallbackQueryHandler(view_section_callback, pattern="^view_section_"))
-    application.add_handler(CallbackQueryHandler(product_section_callback, pattern="^product_section_"))
+    application.add_handler(CallbackQueryHandler(rename_section_callback, pattern="^rename_section$"))
+    application.add_handler(CallbackQueryHandler(delete_section_callback, pattern="^delete_section$"))
     application.add_handler(CallbackQueryHandler(add_product_callback, pattern="^add_product$"))
     application.add_handler(CallbackQueryHandler(edit_product_callback, pattern="^edit_prod_"))
     application.add_handler(CallbackQueryHandler(edit_field_callback, pattern="^edit_field_"))
-    application.add_handler(CallbackQueryHandler(change_section_callback, pattern="^change_section_"))
     application.add_handler(CallbackQueryHandler(delete_product_callback, pattern="^delete_product$"))
     application.add_handler(CallbackQueryHandler(back_to_my_products_callback, pattern="^back_to_my_products$"))
     application.add_handler(CallbackQueryHandler(edit_payment_callback, pattern="^edit_payment$"))
@@ -793,6 +785,7 @@ async def main():
 
     # Обработка текстового ввода
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_section_name))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_rename_section))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_payment_input))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_product_input))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_value))
@@ -804,7 +797,7 @@ async def main():
     await application.updater.start_polling()
     logger.info("✅ Бот запущен и получает обновления")
 
-    # Веб-сервер
+    # Веб-сервер (без пинга)
     app = web.Application()
     app.router.add_get('/health', health)
     runner = web.AppRunner(app)
