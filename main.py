@@ -186,7 +186,12 @@ async def my_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     products = await get_seller_products(user_id)
     if not products:
-        await update.message.reply_text("У вас пока нет товаров. Нажмите «➕ Добавить товар».")
+        text = "У вас пока нет товаров."
+        keyboard = [
+            [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
+        ]
+        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         text = "🏷 **Ваши товары:**\n"
         keyboard = []
@@ -435,7 +440,6 @@ async def confirm_payment_callback(update: Update, context: ContextTypes.DEFAULT
     buyer_id = query.from_user.id
     seller_id = product['seller_id']
     await record_purchase(product_id, buyer_id)
-    # Уведомляем продавца
     try:
         await context.bot.send_message(
             seller_id,
