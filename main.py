@@ -156,7 +156,6 @@ async def add_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         seller_id = int(context.args[0])
         await add_seller(seller_id)
         await update.message.reply_text(f"✅ Пользователь {seller_id} добавлен как продавец (блогер).")
-        # Отправляем уведомление продавцу, чтобы он обновил клавиатуру
         try:
             await context.bot.send_message(seller_id, "🎉 Вам выданы права продавца! Нажмите /start для обновления меню.")
         except:
@@ -475,7 +474,7 @@ async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def health(request):
     return web.Response(text="OK")
 
-# ----- ГЛАВНАЯ ФУНКЦИЯ -----
+# ----- ГЛАВНАЯ ФУНКЦИЯ с исправлением конфликта -----
 async def main():
     logger.info("Запуск бота...")
     if REDIS_URL:
@@ -485,21 +484,19 @@ async def main():
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Команды
+    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("addseller", add_seller_command))
     application.add_handler(CommandHandler("removeseller", remove_seller_command))
     application.add_handler(CommandHandler("setpayment", set_payment_command))
 
-    # Текстовые кнопки
     application.add_handler(MessageHandler(filters.Text("🛍 Товары"), catalog_button))
     application.add_handler(MessageHandler(filters.Text("👑 Мои товары"), my_products_button))
     application.add_handler(MessageHandler(filters.Text("💳 Мои реквизиты"), payment_details_button))
     application.add_handler(MessageHandler(filters.Text("📊 Статистика продаж"), seller_stats_button))
     application.add_handler(MessageHandler(filters.Text("🆘 Помощь"), help_command))
 
-    # Колбэки
     application.add_handler(CallbackQueryHandler(add_product_callback, pattern="^add_product$"))
     application.add_handler(CallbackQueryHandler(edit_product_callback, pattern="^edit_prod_"))
     application.add_handler(CallbackQueryHandler(edit_field_callback, pattern="^edit_field_"))
@@ -511,16 +508,19 @@ async def main():
     application.add_handler(CallbackQueryHandler(catalog_nav_callback, pattern="^catalog_(prev|next)$"))
     application.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
 
-    # Обработка ввода текста для товаров
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_product_input))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_value))
 
     await application.initialize()
+    # Принудительно удаляем вебхук и сбрасываем pending updates, чтобы избежать конфликта
+    await application.bot.delete_webhook(drop_pending_updates=True)
+    # Небольшая задержка, чтобы старый инстанс успел завершиться
+    await asyncio.sleep(1)
     await application.start()
     await application.updater.start_polling()
     logger.info("✅ Бот запущен и получает обновления")
 
-    # Веб-сервер
+    # Веб-сервер для Health Check
     app = web.Application()
     app.router.add_get('/health', health)
     runner = web.AppRunner(app)
@@ -530,6 +530,7 @@ async def main():
     await site.start()
     logger.info(f"✅ Веб-сервер запущен на порту {port}")
 
+    # Держим процесс живым
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
