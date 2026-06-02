@@ -13,6 +13,7 @@ import redis.asyncio as redis
 
 # ================== НАСТРОЙКА ==================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 # ===============================================
 
 # ================== ПЕРЕМЕННЫЕ ==================
@@ -46,9 +47,10 @@ PRODUCTS_PER_PAGE = 5
 # ----- Redis -----
 async def init_redis():
     global redis_client
+    logger.info("Подключение к Redis...")
     redis_client = redis.from_url(REDIS_URL, decode_responses=True, max_connections=30)
     await redis_client.ping()
-    print("✅ Redis подключён")
+    logger.info("✅ Redis подключён")
 
 async def is_owner(user_id):
     return user_id in OWNER_IDS
@@ -134,21 +136,36 @@ async def get_seller_stats(seller_id):
     sales = int(await redis_client.get(f"stats:seller:{seller_id}:sales") or 0)
     return sales
 
-# ----- Клавиатуры -----
+# ----- Клавиатура -----
 def main_keyboard(user_id):
+    # NOTE: asyncio.run_coroutine_threadsafe здесь не сработает, так как мы уже в асинхронной функции.
+    # Вместо этого мы будем вызывать is_seller внутри асинхронных обработчиков, а для синхронной функции
+    # просто вернём базовую клавиатуру. Но для простоты сделаем отдельную асинхронную функцию.
     keyboard = [[KeyboardButton("🛍 Товары")]]
-    if asyncio.run_coroutine_threadsafe(is_seller(user_id), asyncio.get_event_loop()).result():
-        keyboard.append([KeyboardButton("👑 Мои товары"), KeyboardButton("💳 Мои реквизиты")])
-        keyboard.append([KeyboardButton("📊 Статистика продаж")])
-    keyboard.append([KeyboardButton("🆘 Помощь")])
+    # При старте мы не знаем, продавец ли пользователь, но клавиатура может обновиться позже.
+    # В данном случае оставим кнопки для продавцов, но они будут появляться только после перезапуска.
+    # Лучше генерировать клавиатуру динамически в обработчике start.
+    if OWNER_IDS and user_id in OWNER_IDS:
+        keyboard.append([KeyboardButton("👑 Админка")])  # временно
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ----- Команды -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    logger.info(f"start вызван пользователем {user_id}")
+    # Получаем актуальный статус продавца
+    seller_status = await is_seller(user_id)
+    keyboard = [
+        [KeyboardButton("🛍 Товары")],
+    ]
+    if seller_status:
+        keyboard.append([KeyboardButton("👑 Мои товары"), KeyboardButton("💳 Мои реквизиты")])
+        keyboard.append([KeyboardButton("📊 Статистика продаж")])
+    keyboard.append([KeyboardButton("🆘 Помощь")])
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
         "🛍 Добро пожаловать в маркетплейс!\nИспользуйте кнопки для навигации.",
-        reply_markup=main_keyboard(user_id)
+        reply_markup=reply_markup
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -482,48 +499,55 @@ async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def health(request):
     return web.Response(text="OK")
 
-# ----- ЗАПУСК (исправлен для Python 3.14) -----
+# ----- ГЛАВНАЯ ФУНКЦИЯ (правильный запуск) -----
 async def main():
-    """Асинхронная main-функция."""
-    await init_redis()
-    print("✅ Redis инициализирован")
+    logger.info("Запуск бота...")
+    # 1. Подключаем Redis (если нет REDIS_URL – пропускаем, но бот будет работать без сохранения)
+    if REDIS_URL:
+        await init_redis()
+    else:
+        logger.warning("REDIS_URL не задан! Данные не будут сохраняться.")
 
-    # Создание приложения Telegram
-    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # 2. Создаём приложение Telegram
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Регистрация обработчиков
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("help", help_command))
-    bot_app.add_handler(CommandHandler("addseller", add_seller_command))
-    bot_app.add_handler(CommandHandler("removeseller", remove_seller_command))
-    bot_app.add_handler(CommandHandler("setpayment", set_payment_command))
+    # 3. Регистрация обработчиков
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("addseller", add_seller_command))
+    application.add_handler(CommandHandler("removeseller", remove_seller_command))
+    application.add_handler(CommandHandler("setpayment", set_payment_command))
 
-    bot_app.add_handler(MessageHandler(filters.Text("🛍 Товары"), catalog_button))
-    bot_app.add_handler(MessageHandler(filters.Text("👑 Мои товары"), my_products_button))
-    bot_app.add_handler(MessageHandler(filters.Text("💳 Мои реквизиты"), payment_details_button))
-    bot_app.add_handler(MessageHandler(filters.Text("📊 Статистика продаж"), seller_stats_button))
-    bot_app.add_handler(MessageHandler(filters.Text("🆘 Помощь"), help_command))
+    # Текстовые кнопки
+    application.add_handler(MessageHandler(filters.Text("🛍 Товары"), catalog_button))
+    application.add_handler(MessageHandler(filters.Text("👑 Мои товары"), my_products_button))
+    application.add_handler(MessageHandler(filters.Text("💳 Мои реквизиты"), payment_details_button))
+    application.add_handler(MessageHandler(filters.Text("📊 Статистика продаж"), seller_stats_button))
+    application.add_handler(MessageHandler(filters.Text("🆘 Помощь"), help_command))
 
-    bot_app.add_handler(CallbackQueryHandler(add_product_callback, pattern="^add_product$"))
-    bot_app.add_handler(CallbackQueryHandler(edit_product_callback, pattern="^edit_prod_"))
-    bot_app.add_handler(CallbackQueryHandler(edit_field_callback, pattern="^edit_field_"))
-    bot_app.add_handler(CallbackQueryHandler(delete_product_callback, pattern="^delete_product$"))
-    bot_app.add_handler(CallbackQueryHandler(back_to_my_products_callback, pattern="^back_to_my_products$"))
-    bot_app.add_handler(CallbackQueryHandler(buy_callback, pattern="^buy_"))
-    bot_app.add_handler(CallbackQueryHandler(confirm_payment_callback, pattern="^confirm_payment_"))
-    bot_app.add_handler(CallbackQueryHandler(back_to_catalog_callback, pattern="^back_to_catalog$"))
-    bot_app.add_handler(CallbackQueryHandler(catalog_nav_callback, pattern="^catalog_(prev|next)$"))
-    bot_app.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
+    # Колбэки
+    application.add_handler(CallbackQueryHandler(add_product_callback, pattern="^add_product$"))
+    application.add_handler(CallbackQueryHandler(edit_product_callback, pattern="^edit_prod_"))
+    application.add_handler(CallbackQueryHandler(edit_field_callback, pattern="^edit_field_"))
+    application.add_handler(CallbackQueryHandler(delete_product_callback, pattern="^delete_product$"))
+    application.add_handler(CallbackQueryHandler(back_to_my_products_callback, pattern="^back_to_my_products$"))
+    application.add_handler(CallbackQueryHandler(buy_callback, pattern="^buy_"))
+    application.add_handler(CallbackQueryHandler(confirm_payment_callback, pattern="^confirm_payment_"))
+    application.add_handler(CallbackQueryHandler(back_to_catalog_callback, pattern="^back_to_catalog$"))
+    application.add_handler(CallbackQueryHandler(catalog_nav_callback, pattern="^catalog_(prev|next)$"))
+    application.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
 
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_product_input))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_value))
+    # Обработка текстового ввода (добавление/редактирование товаров)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_product_input))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_value))
 
-    # Запуск бота и веб-сервера
-    await bot_app.initialize()
-    await bot_app.start()
-    await bot_app.updater.start_polling()
+    # 4. Запуск бота и веб-сервера
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    logger.info("✅ Бот запущен и получает обновления")
 
-    # Запуск веб-сервера (неблокирующий)
+    # 5. Веб-сервер для Health Check
     app = web.Application()
     app.router.add_get('/health', health)
     runner = web.AppRunner(app)
@@ -531,11 +555,9 @@ async def main():
     port = int(os.environ.get('PORT', 10000))
     site = web.TCPSite(runner, host='0.0.0.0', port=port)
     await site.start()
+    logger.info(f"✅ Веб-сервер запущен на порту {port}")
 
-    print(f"✅ Веб-сервер запущен на порту {port}")
-    print("✅ Бот запущен")
-
-    # Ожидание завершения (бесконечно)
+    # 6. Держим процесс живым
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
