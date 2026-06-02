@@ -482,38 +482,28 @@ async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def health(request):
     return web.Response(text="OK")
 
-# ----- Запуск -----
-async def on_startup(app):
+# ----- ЗАПУСК (исправлен для Python 3.14) -----
+async def main():
+    """Асинхронная main-функция."""
     await init_redis()
-    print("✅ Бот запущен")
+    print("✅ Redis инициализирован")
 
-async def on_shutdown(app):
-    if redis_client:
-        await redis_client.aclose()
-
-def main():
-    app = web.Application()
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    app.router.add_get('/health', health)
-
+    # Создание приложения Telegram
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Команды
+    # Регистрация обработчиков
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("help", help_command))
     bot_app.add_handler(CommandHandler("addseller", add_seller_command))
     bot_app.add_handler(CommandHandler("removeseller", remove_seller_command))
     bot_app.add_handler(CommandHandler("setpayment", set_payment_command))
 
-    # Кнопки главного меню
     bot_app.add_handler(MessageHandler(filters.Text("🛍 Товары"), catalog_button))
     bot_app.add_handler(MessageHandler(filters.Text("👑 Мои товары"), my_products_button))
     bot_app.add_handler(MessageHandler(filters.Text("💳 Мои реквизиты"), payment_details_button))
     bot_app.add_handler(MessageHandler(filters.Text("📊 Статистика продаж"), seller_stats_button))
     bot_app.add_handler(MessageHandler(filters.Text("🆘 Помощь"), help_command))
 
-    # Колбэки
     bot_app.add_handler(CallbackQueryHandler(add_product_callback, pattern="^add_product$"))
     bot_app.add_handler(CallbackQueryHandler(edit_product_callback, pattern="^edit_prod_"))
     bot_app.add_handler(CallbackQueryHandler(edit_field_callback, pattern="^edit_field_"))
@@ -525,15 +515,28 @@ def main():
     bot_app.add_handler(CallbackQueryHandler(catalog_nav_callback, pattern="^catalog_(prev|next)$"))
     bot_app.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
 
-    # Обработка текстового ввода для добавления/редактирования товаров
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_product_input))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_value))
 
-    # Запуск поллинга и веб-сервера
+    # Запуск бота и веб-сервера
+    await bot_app.initialize()
+    await bot_app.start()
+    await bot_app.updater.start_polling()
+
+    # Запуск веб-сервера (неблокирующий)
+    app = web.Application()
+    app.router.add_get('/health', health)
+    runner = web.AppRunner(app)
+    await runner.setup()
     port = int(os.environ.get('PORT', 10000))
-    loop = asyncio.get_event_loop()
-    loop.create_task(bot_app.run_polling())
-    web.run_app(app, host='0.0.0.0', port=port)
+    site = web.TCPSite(runner, host='0.0.0.0', port=port)
+    await site.start()
+
+    print(f"✅ Веб-сервер запущен на порту {port}")
+    print("✅ Бот запущен")
+
+    # Ожидание завершения (бесконечно)
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
