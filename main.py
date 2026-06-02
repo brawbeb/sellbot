@@ -23,6 +23,7 @@ REDIS_URL = os.environ.get("REDIS_URL")
 # ================================================
 
 redis_client = None
+bot_app = None
 
 DEFAULT_ABOUT_TEXT = "🛍 Добро пожаловать в маркетплейс! Здесь вы можете купить различные товары у наших продавцов."
 
@@ -99,7 +100,7 @@ async def add_product(seller_id, name, price, description, section, quantity=Non
         "price": int(price),
         "description": description,
         "quantity": quantity,
-        "data_from": data_from,  # "buyer" или "seller"
+        "data_from": data_from,
         "created": datetime.now().isoformat()
     }
     await redis_client.set(f"product:{product_id}", json.dumps(product))
@@ -315,8 +316,7 @@ async def process_section_name(update: Update, context: ContextTypes.DEFAULT_TYP
     await set_seller_section(user_id, section_name)
     await update.message.reply_text(f"✅ Раздел «{section_name}» создан.")
     context.user_data.pop('awaiting_section_name', None)
-    fake_update = type('', (), {'callback_query': type('', (), {'from_user': type('', (), {'id': user_id})(), 'answer': lambda: None, 'edit_message_text': lambda *a, **k: None})})()
-    await manage_sections_callback(fake_update, context)
+    await my_products_button(update, context)
 
 async def rename_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -342,8 +342,7 @@ async def process_rename_section(update: Update, context: ContextTypes.DEFAULT_T
     await rename_seller_section(user_id, new_name)
     await update.message.reply_text(f"✅ Раздел переименован из «{old_section}» в «{new_name}».")
     context.user_data.pop('awaiting_rename_section', None)
-    fake_update = type('', (), {'callback_query': type('', (), {'from_user': type('', (), {'id': user_id})(), 'answer': lambda: None, 'edit_message_text': lambda *a, **k: None})})()
-    await manage_sections_callback(fake_update, context)
+    await my_products_button(update, context)
 
 async def delete_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -422,7 +421,7 @@ async def data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not query:
         return
     await query.answer()
-    data_from = query.data.split("_")[2]
+    data_from = query.data.split("_")[2]  # buyer или seller
     context.user_data['product_data_from'] = data_from
     context.user_data['awaiting_product'] = 'desc'
     await query.edit_message_text("Введите **описание** товара:")
@@ -489,7 +488,7 @@ async def edit_data_from_callback(update: Update, context: ContextTypes.DEFAULT_
     if not query:
         return
     await query.answer()
-    data_from = query.data.split("_")[3]
+    data_from = query.data.split("_")[3]  # buyer или seller
     product_id = context.user_data.get('edit_product_id')
     if product_id:
         await update_product(product_id, data_from=data_from)
@@ -791,7 +790,6 @@ async def confirm_payment_callback(update: Update, context: ContextTypes.DEFAULT
     buyer_name = await get_user_name(buyer_id)
     await record_purchase(product_id, buyer_id, qty)
 
-    # Отправляем уведомление продавцу
     await context.bot.send_message(
         seller_id,
         f"💰 Покупатель @{buyer_name} (ID: {buyer_id}) сообщил об оплате товара «{product['name']}».\n"
@@ -799,7 +797,6 @@ async def confirm_payment_callback(update: Update, context: ContextTypes.DEFAULT
         f"Проверьте поступление средств."
     )
 
-    # Если данные должен предоставить продавец – запрашиваем у продавца файл/текст для передачи покупателю
     if product.get('data_from') == 'seller':
         context.user_data['pending_delivery'] = {'product_id': product_id, 'buyer_id': buyer_id, 'qty': qty}
         await query.edit_message_text(
@@ -816,15 +813,12 @@ async def confirm_payment_callback(update: Update, context: ContextTypes.DEFAULT
             ])
         )
     else:
-        # Данные должен предоставить покупатель – продавец может запросить их через /request
         await query.edit_message_text("✅ Спасибо! Уведомление отправлено продавцу. Если продавец запросит дополнительные данные, он свяжется с вами.")
-        # Отправляем продавцу инструкцию, как запросить данные
         await context.bot.send_message(
             seller_id,
             f"💡 Для получения дополнительных данных от покупателя @{buyer_name} используйте команду:\n/request {buyer_id}"
         )
 
-# ----- Доставка товара (если данные предоставляет продавец) -----
 async def deliver_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -852,7 +846,6 @@ async def process_delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Товар не найден.")
         context.user_data.pop('delivery', None)
         return
-    # Отправляем покупателю
     if update.message.document:
         await context.bot.send_document(buyer_id, update.message.document.file_id, caption=f"Ваш товар: {product['name']}")
     elif update.message.text:
@@ -863,7 +856,6 @@ async def process_delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Товар отправлен покупателю.")
     context.user_data.pop('delivery', None)
 
-# ----- Запрос дополнительных данных от покупателя -----
 async def request_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not await is_seller(user_id):
@@ -897,15 +889,6 @@ async def process_request_text(update: Update, context: ContextTypes.DEFAULT_TYP
     except:
         await update.message.reply_text("❌ Не удалось отправить сообщение покупателю (возможно, он заблокировал бота).")
     context.user_data.pop('awaiting_request_text', None)
-
-# ----- Ответ покупателя на запрос продавца (просто пересылаем продавцу) -----
-async def forward_reply_to_seller(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Если пользователь не продавец – возможно, это ответ на запрос продавца
-    if await is_seller(update.effective_user.id):
-        return
-    # Сохранять в контексте, кто и когда запрашивал – можно через Redis, но для простоты используем временное хранилище
-    # Чтобы не усложнять, предположим, что последний продавец, запрашивавший данные у этого пользователя, хранится в Redis
-    pass  # В данном коде не реализовано, т.к. требует отдельной логики. Пока оставляем, как есть.
 
 # ----- О магазине, Профиль -----
 async def about_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -955,7 +938,7 @@ async def cancel_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     await edit_product_callback(update, context)
 
-# ----- Веб-сервер (без вывода пинга) -----
+# ----- Веб-сервер -----
 async def health(request):
     return web.Response(text="OK")
 
@@ -971,7 +954,6 @@ async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     bot_app = application
 
-    # Команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("addseller", add_seller_command))
@@ -979,7 +961,6 @@ async def main():
     application.add_handler(CommandHandler("setabout", set_about_command))
     application.add_handler(CommandHandler("request", request_data_command))
 
-    # Кнопки главного меню
     application.add_handler(MessageHandler(filters.Text("📂 Все категории"), catalog_button))
     application.add_handler(MessageHandler(filters.Text("🛒 Наличие товаров"), all_products_button))
     application.add_handler(MessageHandler(filters.Text("ℹ️ О магазине"), about_button))
@@ -989,7 +970,6 @@ async def main():
     application.add_handler(MessageHandler(filters.Text("💳 Реквизиты"), payment_details_button))
     application.add_handler(MessageHandler(filters.Text("📊 Статистика продаж"), seller_stats_button))
 
-    # Колбэки
     application.add_handler(CallbackQueryHandler(manage_sections_callback, pattern="^manage_sections$"))
     application.add_handler(CallbackQueryHandler(add_section_callback, pattern="^add_section$"))
     application.add_handler(CallbackQueryHandler(rename_section_callback, pattern="^rename_section$"))
@@ -1013,7 +993,6 @@ async def main():
     application.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
     application.add_handler(CallbackQueryHandler(cancel_edit_callback, pattern="^cancel_edit$"))
 
-    # Обработка текстового ввода
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_section_name))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_rename_section))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_payment_input))
@@ -1022,7 +1001,6 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_custom_qty))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_delivery))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_request_text))
-    application.add_handler(MessageHandler(filters.ALL, forward_reply_to_seller))  # простейшая пересылка
 
     await application.initialize()
     await application.bot.delete_webhook(drop_pending_updates=True)
@@ -1031,7 +1009,6 @@ async def main():
     await application.updater.start_polling()
     logger.info("✅ Бот запущен и получает обновления")
 
-    # Веб-сервер
     web_app = web.Application()
     web_app.router.add_get('/health', health)
     runner = web.AppRunner(web_app)
