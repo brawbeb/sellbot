@@ -46,7 +46,7 @@ PRODUCTS_PER_PAGE = 5
 # ----- Redis -----
 async def init_redis():
     global redis_client
-    redis_client = redis.from_url(REDIS_URL, decode_responses=True, max_connections=10)
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True, max_connections=30)
     await redis_client.ping()
     print("✅ Redis подключён")
 
