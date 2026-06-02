@@ -25,21 +25,7 @@ REDIS_URL = os.environ.get("REDIS_URL")
 redis_client = None
 
 HELP_TEXT = """
-🆘 **Помощь по боту**
-
-👑 **Владельцы:**
-/addseller <user_id> – добавить продавца
-/removeseller <user_id> – удалить продавца
-
-👤 **Продавец (блогер):**
-👑 Мои товары – управление товарами
-💳 Мои реквизиты – указать платёжные данные
-📊 Статистика продаж – мои продажи
-
-🧑 **Покупатель:**
-🛍 Товары – купить товары
-
-По вопросам: @karatitik
+По вопросам: @karatitik, @Pahachill
 """
 
 PRODUCTS_PER_PAGE = 5
@@ -64,12 +50,11 @@ async def add_seller(user_id):
 async def remove_seller(user_id):
     await redis_client.srem("sellers", str(user_id))
 
-# ----- Платёжные реквизиты продавца -----
-async def set_payment_details(seller_id, text):
-    await redis_client.set(f"payment:{seller_id}", text)
-
 async def get_payment_details(seller_id):
     return await redis_client.get(f"payment:{seller_id}")
+
+async def set_payment_details(seller_id, text):
+    await redis_client.set(f"payment:{seller_id}", text)
 
 # ----- Товары -----
 async def add_product(seller_id, name, price, description):
@@ -136,37 +121,25 @@ async def get_seller_stats(seller_id):
     sales = int(await redis_client.get(f"stats:seller:{seller_id}:sales") or 0)
     return sales
 
-# ----- Клавиатура -----
-def main_keyboard(user_id):
-    # NOTE: asyncio.run_coroutine_threadsafe здесь не сработает, так как мы уже в асинхронной функции.
-    # Вместо этого мы будем вызывать is_seller внутри асинхронных обработчиков, а для синхронной функции
-    # просто вернём базовую клавиатуру. Но для простоты сделаем отдельную асинхронную функцию.
-    keyboard = [[KeyboardButton("🛍 Товары")]]
-    # При старте мы не знаем, продавец ли пользователь, но клавиатура может обновиться позже.
-    # В данном случае оставим кнопки для продавцов, но они будут появляться только после перезапуска.
-    # Лучше генерировать клавиатуру динамически в обработчике start.
-    if OWNER_IDS and user_id in OWNER_IDS:
-        keyboard.append([KeyboardButton("👑 Админка")])  # временно
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-# ----- Команды -----
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ----- Вспомогательная функция для отправки главной клавиатуры -----
+async def send_main_keyboard(update: Update, text: str):
     user_id = update.effective_user.id
-    logger.info(f"start вызван пользователем {user_id}")
-    # Получаем актуальный статус продавца
     seller_status = await is_seller(user_id)
-    keyboard = [
-        [KeyboardButton("🛍 Товары")],
-    ]
+    keyboard = [[KeyboardButton("🛍 Товары")]]
     if seller_status:
         keyboard.append([KeyboardButton("👑 Мои товары"), KeyboardButton("💳 Мои реквизиты")])
         keyboard.append([KeyboardButton("📊 Статистика продаж")])
     keyboard.append([KeyboardButton("🆘 Помощь")])
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(
-        "🛍 Добро пожаловать в маркетплейс!\nИспользуйте кнопки для навигации.",
-        reply_markup=reply_markup
-    )
+    if update.message:
+        await update.message.reply_text(text, reply_markup=reply_markup)
+    else:
+        await update.effective_message.reply_text(text, reply_markup=reply_markup)
+
+# ----- Команды -----
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"start от {update.effective_user.id}")
+    await send_main_keyboard(update, "🛍 Добро пожаловать в маркетплейс!\nИспользуйте кнопки для навигации.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode='Markdown')
@@ -174,7 +147,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----- Админ-команды (только владельцы) -----
 async def add_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner(update.effective_user.id):
-        await update.message.reply_text("⛔ Нет прав. Только владельцы могут назначать продавцов.")
+        await update.message.reply_text("⛔ Нет прав.")
         return
     if not context.args:
         await update.message.reply_text("❌ Укажите ID пользователя. Пример: /addseller 123456789")
@@ -183,12 +156,17 @@ async def add_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         seller_id = int(context.args[0])
         await add_seller(seller_id)
         await update.message.reply_text(f"✅ Пользователь {seller_id} добавлен как продавец (блогер).")
+        # Отправляем уведомление продавцу, чтобы он обновил клавиатуру
+        try:
+            await context.bot.send_message(seller_id, "🎉 Вам выданы права продавца! Нажмите /start для обновления меню.")
+        except:
+            pass
     except:
         await update.message.reply_text("❌ Неверный ID.")
 
 async def remove_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner(update.effective_user.id):
-        await update.message.reply_text("⛔ Нет прав. Только владельцы могут удалять продавцов.")
+        await update.message.reply_text("⛔ Нет прав.")
         return
     if not context.args:
         await update.message.reply_text("❌ Укажите ID. Пример: /removeseller 123456789")
@@ -380,7 +358,6 @@ async def catalog_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for p in page_products:
         text += f"**{p['name']}** – {p['price']} RUB (продавец: `{p['seller_id']}`)\n{p['description']}\n\n"
         keyboard.append([InlineKeyboardButton(f"Купить {p['name']}", callback_data=f"buy_{p['id']}")])
-    # Пагинация
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("◀️ Назад", callback_data="catalog_prev"))
@@ -432,15 +409,14 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not product:
         await query.edit_message_text("❌ Товар не найден.")
         return
-    seller_id = product['seller_id']
-    payment_details = await get_payment_details(seller_id)
+    payment_details = await get_payment_details(product['seller_id'])
     if not payment_details:
         payment_details = "реквизиты не указаны. Свяжитесь с продавцом через поддержку."
     text = (
         f"🧾 **Оплата товара «{product['name']}»**\n"
         f"Сумма: {product['price']} RUB\n\n"
         f"💰 **Реквизиты продавца:**\n{payment_details}\n\n"
-        f"После перевода нажмите кнопку «Я оплатил» и сообщите продавцу об оплате (можно в личные сообщения)."
+        f"После перевода нажмите кнопку «Я оплатил» и сообщите продавцу об оплате."
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Я оплатил", callback_data=f"confirm_payment_{product_id}")],
@@ -458,18 +434,18 @@ async def confirm_payment_callback(update: Update, context: ContextTypes.DEFAULT
         return
     buyer_id = query.from_user.id
     seller_id = product['seller_id']
+    await record_purchase(product_id, buyer_id)
     # Уведомляем продавца
     try:
         await context.bot.send_message(
             seller_id,
             f"💰 Пользователь {buyer_id} сообщил об оплате товара «{product['name']}».\n"
             f"Сумма: {product['price']} RUB.\n"
-            f"Проверьте поступление средств и свяжитесь с покупателем для завершения сделки."
+            f"Проверьте поступление средств и свяжитесь с покупателем."
         )
     except:
         pass
-    await query.edit_message_text("✅ Спасибо! Уведомление отправлено продавцу. Он свяжется с вами в ближайшее время.")
-    await record_purchase(product_id, buyer_id)
+    await query.edit_message_text("✅ Спасибо! Уведомление отправлено продавцу. Он свяжется с вами.")
 
 async def back_to_catalog_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -477,41 +453,35 @@ async def back_to_catalog_callback(update: Update, context: ContextTypes.DEFAULT
     context.user_data['catalog_page'] = 0
     await catalog_button(update, context)
 
-# ----- Статистика продавца -----
 async def seller_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not await is_seller(user_id):
         await update.message.reply_text("❌ Вы не продавец.")
         return
     sales = await get_seller_stats(user_id)
-    text = f"📊 **Ваша статистика продаж**\nПродано товаров: {sales}"
-    await update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(f"📊 **Ваша статистика продаж**\nПродано товаров: {sales}", parse_mode='Markdown')
 
-# ----- Кнопка "Назад" в главное меню -----
 async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    await start(update, context)
-    await query.delete_message()
+    await send_main_keyboard(update, "Главное меню")
 
 # ----- Веб-сервер для здоровья -----
 async def health(request):
     return web.Response(text="OK")
 
-# ----- ГЛАВНАЯ ФУНКЦИЯ (правильный запуск) -----
+# ----- ГЛАВНАЯ ФУНКЦИЯ -----
 async def main():
     logger.info("Запуск бота...")
-    # 1. Подключаем Redis (если нет REDIS_URL – пропускаем, но бот будет работать без сохранения)
     if REDIS_URL:
         await init_redis()
     else:
         logger.warning("REDIS_URL не задан! Данные не будут сохраняться.")
 
-    # 2. Создаём приложение Telegram
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # 3. Регистрация обработчиков
+    # Команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("addseller", add_seller_command))
@@ -537,17 +507,16 @@ async def main():
     application.add_handler(CallbackQueryHandler(catalog_nav_callback, pattern="^catalog_(prev|next)$"))
     application.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
 
-    # Обработка текстового ввода (добавление/редактирование товаров)
+    # Обработка ввода текста для товаров
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_product_input))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_value))
 
-    # 4. Запуск бота и веб-сервера
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
     logger.info("✅ Бот запущен и получает обновления")
 
-    # 5. Веб-сервер для Health Check
+    # Веб-сервер
     app = web.Application()
     app.router.add_get('/health', health)
     runner = web.AppRunner(app)
@@ -557,7 +526,6 @@ async def main():
     await site.start()
     logger.info(f"✅ Веб-сервер запущен на порту {port}")
 
-    # 6. Держим процесс живым
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
