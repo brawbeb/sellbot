@@ -218,21 +218,19 @@ async def get_user_name(user_id):
     except:
         return str(user_id)
 
+# ================== ГЛАВНАЯ КЛАВИАТУРА (компактная) ==================
 async def send_main_keyboard(update: Update, text: str):
     user_id = update.effective_user.id
     seller_status = await is_seller(user_id)
     if seller_status:
         keyboard = [
-            [KeyboardButton("📂 Все категории")],
-            [KeyboardButton("🛒 Наличие товаров")],
-            [KeyboardButton("👑 Управление товарами")],
-            [KeyboardButton("📊 Статистика продаж")],
+            [KeyboardButton("📂 Все категории"), KeyboardButton("🛒 Наличие товаров")],
+            [KeyboardButton("👑 Управление товарами"), KeyboardButton("📊 Статистика продаж")],
             [KeyboardButton("ℹ️ О магазине"), KeyboardButton("👤 Профиль"), KeyboardButton("🆘 Помощь")]
         ]
     else:
         keyboard = [
-            [KeyboardButton("📂 Все категории")],
-            [KeyboardButton("🛒 Наличие товаров")],
+            [KeyboardButton("📂 Все категории"), KeyboardButton("🛒 Наличие товаров")],
             [KeyboardButton("ℹ️ О магазине"), KeyboardButton("👤 Профиль")],
             [KeyboardButton("🆘 Помощь")]
         ]
@@ -249,6 +247,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode='Markdown')
+
+# ----- Админские команды (для создателей) -----
+async def helpadm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_owner(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет прав.")
+        return
+    text = (
+        "👑 **Команды для создателей**\n\n"
+        "/addseller <ID> – добавить продавца\n"
+        "/removeseller <ID> – удалить продавца\n"
+        "/setpayment <номер карты> – установить реквизиты для оплаты\n"
+        "/setabout <текст> – изменить текст страницы «О магазине»\n"
+        "/helpadm – эта справка"
+    )
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+# То же самое для /admhelp (синоним)
+async def admhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await helpadm_command(update, context)
 
 async def add_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner(update.effective_user.id):
@@ -421,7 +438,7 @@ async def data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logger.info(f"data_from_callback: выбрано {data_from}")
     context.user_data['product_data_from'] = data_from
     context.user_data['awaiting_product'] = 'desc'
-    await query.edit_message_text("Введите описание товара:")
+    await query.edit_message_text("Введите описание товара (например, ссылку на профиль Steam или трейд-ссылку):")
 
 async def cancel_add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1124,7 +1141,7 @@ async def process_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def health(request):
     return web.Response(text="OK")
 
-# ================== ПОДДЕРЖАНИЕ АКТИВНОСТИ (БЕЗ ВЫВОДА) ==================
+# ================== ПОДДЕРЖАНИЕ АКТИВНОСТИ ==================
 async def keep_alive():
     while True:
         await asyncio.sleep(300)
@@ -1148,9 +1165,11 @@ async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     bot_app = application
 
-    # Регистрация обработчиков (все, что были выше)
+    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("helpadm", helpadm_command))
+    application.add_handler(CommandHandler("admhelp", admhelp_command))
     application.add_handler(CommandHandler("addseller", add_seller_command))
     application.add_handler(CommandHandler("removeseller", remove_seller_command))
     application.add_handler(CommandHandler("setpayment", set_payment_command))
@@ -1209,10 +1228,8 @@ async def main():
     await site.start()
     logger.info(f"✅ Веб-сервер запущен на порту {port}")
 
-    # Небольшая задержка для регистрации порта
-    await asyncio.sleep(2)
-
-    # Бесконечное ожидание (надёжный способ)
+    asyncio.create_task(keep_alive())
+    # Бесконечное ожидание
     try:
         while True:
             await asyncio.sleep(3600)
