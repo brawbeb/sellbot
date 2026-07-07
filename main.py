@@ -442,6 +442,12 @@ async def add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text("Введите название товара:")
 
 async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("=" * 50)
+    logger.info("process_product_input() вызвана")
+    logger.info(f"Текст: {update.message.text}")
+    logger.info(f"Состояние: {context.user_data.get('awaiting_product')}")
+    logger.info(f"user_data: {context.user_data}")
+    logger.info("=" * 50)
     user_id = update.effective_user.id
     if not await is_seller(user_id):
         await update.message.reply_text("❌ Вы не продавец.")
@@ -480,12 +486,20 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_text("❌ Ошибка: не выбран раздел. Начните заново.")
             context.user_data.clear()
             return
+        logger.info("Начинаем создавать товар...")
+        logger.info(f"Данные товара: {context.user_data}")
+        logger.info(f"Товар создан. ID = {product_id}")
         product_id = await add_product(user_id, name, price, desc, section, quantity, data_from)
         await update.message.reply_text(f"✅ Товар «{name}» добавлен в раздел «{section}». ID: {product_id}")
         context.user_data.clear()
         await my_products_button(update, context)
 
 async def data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("=" * 50)
+    logger.info("data_from_callback()")
+    logger.info(f"callback_data = {update.callback_query.data}")
+    logger.info(f"user_data = {context.user_data}")
+    logger.info("=" * 50)
     query = update.callback_query
     if not query:
         return
@@ -1066,6 +1080,40 @@ async def back_to_catalog_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     await catalog_button(update, context)
 
+    async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Единый обработчик всех текстовых сообщений.
+        Каждое сообщение попадает сюда только один раз.
+        """
+
+        # Создание раздела
+        if context.user_data.get("awaiting_section_name"):
+            return await process_section_name(update, context)
+
+        # Переименование раздела
+        if context.user_data.get("awaiting_rename_section"):
+            return await process_rename_section(update, context)
+
+        # Добавление товара
+        if context.user_data.get("awaiting_product"):
+            return await process_product_input(update, context)
+
+        # Редактирование товара
+        if context.user_data.get("awaiting_edit_value"):
+            return await process_edit_value(update, context)
+
+        # Покупка (свое количество)
+        if context.user_data.get("awaiting_custom_qty"):
+            return await process_custom_qty(update, context)
+
+        # Отправка товара
+        if context.user_data.get("delivery"):
+            return await process_delivery(update, context)
+
+        # Запрос данных
+        if context.user_data.get("awaiting_request_text"):
+            return await process_request_text(update, context)
+
 # ================== ВЕБ-СЕРВЕР ==================
 async def health(request):
     return web.Response(text="OK")
@@ -1139,14 +1187,10 @@ async def main():
     application.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
     application.add_handler(CallbackQueryHandler(cancel_edit_callback, pattern="^cancel_edit$"))
 
-    # Обработка текстового ввода
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_section_name))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_rename_section))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_product_input))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_value))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_custom_qty))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_delivery))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_request_text))
+    # Единый обработчик текста
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, text_router)
+    )
 
     await application.initialize()
     await application.bot.delete_webhook(drop_pending_updates=True)
