@@ -29,7 +29,6 @@ redis_client = None
 bot_app = None
 
 DEFAULT_ABOUT_TEXT = "🛍 Добро пожаловать в маркетплейс! Здесь вы можете купить различные товары у наших продавцов."
-
 HELP_TEXT = """
 По вопросам: @karatitik, @Pahachill
 """
@@ -88,7 +87,7 @@ async def get_about_text():
 async def set_about_text(text):
     await redis_client.set("global:about", text)
 
-# ================== РАЗДЕЛЫ (один на продавца) ==================
+# ================== РАЗДЕЛЫ ==================
 async def get_seller_section(seller_id):
     return await redis_client.get(f"seller:{seller_id}:section")
 
@@ -129,6 +128,7 @@ async def add_product(seller_id, name, price, description, section, quantity=Non
     }
     await redis_client.set(f"product:{product_id}", json.dumps(product))
     await redis_client.sadd(f"seller:{seller_id}:products", str(product_id))
+    logger.info(f"✅ Товар добавлен: id={product_id}, name={name}, section={section}, seller={seller_id}")
     return product_id
 
 async def get_product(product_id):
@@ -242,975 +242,999 @@ async def send_main_keyboard(update: Update, text: str):
     else:
         await update.effective_message.reply_text(text, reply_markup=reply_markup)
 
-# ================== КОМАНДЫ ==================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"start от {update.effective_user.id}")
-    await send_main_keyboard(update, "🛍 Добро пожаловать в маркетплейс!\nИспользуйте кнопки для навигации.")
+        # ================== КОМАНДЫ ==================
+        async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            logger.info(f"start от {update.effective_user.id}")
+            await send_main_keyboard(update, "🛍 Добро пожаловать в маркетплейс!\nИспользуйте кнопки для навигации.")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_TEXT, parse_mode='Markdown')
+        async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            await update.message.reply_text(HELP_TEXT, parse_mode='Markdown')
 
-async def add_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_owner(update.effective_user.id):
-        await update.message.reply_text("⛔ Нет прав.")
-        return
-    if not context.args:
-        await update.message.reply_text("❌ Укажите ID пользователя. Пример: /addseller 123456789")
-        return
-    try:
-        seller_id = int(context.args[0])
-        await add_seller(seller_id)
-        await update.message.reply_text(f"✅ Пользователь {seller_id} добавлен как продавец.")
-        try:
-            await context.bot.send_message(seller_id, "🎉 Вам выданы права продавца! Нажмите /start для обновления меню.")
-        except:
-            pass
-    except:
-        await update.message.reply_text("❌ Неверный ID.")
+        async def add_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not await is_owner(update.effective_user.id):
+                await update.message.reply_text("⛔ Нет прав.")
+                return
+            if not context.args:
+                await update.message.reply_text("❌ Укажите ID пользователя. Пример: /addseller 123456789")
+                return
+            try:
+                seller_id = int(context.args[0])
+                await add_seller(seller_id)
+                await update.message.reply_text(f"✅ Пользователь {seller_id} добавлен как продавец.")
+                try:
+                    await context.bot.send_message(seller_id,
+                                                   "🎉 Вам выданы права продавца! Нажмите /start для обновления меню.")
+                except:
+                    pass
+            except:
+                await update.message.reply_text("❌ Неверный ID.")
 
-async def remove_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_owner(update.effective_user.id):
-        await update.message.reply_text("⛔ Нет прав.")
-        return
-    if not context.args:
-        await update.message.reply_text("❌ Укажите ID. Пример: /removeseller 123456789")
-        return
-    try:
-        seller_id = int(context.args[0])
-        await remove_seller(seller_id)
-        await update.message.reply_text(f"✅ Продавец {seller_id} удалён.")
-    except:
-        await update.message.reply_text("❌ Неверный ID.")
+        async def remove_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not await is_owner(update.effective_user.id):
+                await update.message.reply_text("⛔ Нет прав.")
+                return
+            if not context.args:
+                await update.message.reply_text("❌ Укажите ID. Пример: /removeseller 123456789")
+                return
+            try:
+                seller_id = int(context.args[0])
+                await remove_seller(seller_id)
+                await update.message.reply_text(f"✅ Продавец {seller_id} удалён.")
+            except:
+                await update.message.reply_text("❌ Неверный ID.")
 
-async def set_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_owner(update.effective_user.id):
-        await update.message.reply_text("⛔ Нет прав.")
-        return
-    if not context.args:
-        await update.message.reply_text("❌ Укажите номер карты. Пример: /setpayment 2202208177548824")
-        return
-    card_number = context.args[0].strip()
-    await set_payment_details(card_number)
-    await update.message.reply_text(f"✅ Номер карты для оплаты обновлён: {card_number}")
+        async def set_payment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not await is_owner(update.effective_user.id):
+                await update.message.reply_text("⛔ Нет прав.")
+                return
+            if not context.args:
+                await update.message.reply_text("❌ Укажите номер карты. Пример: /setpayment 2202208177548824")
+                return
+            card_number = context.args[0].strip()
+            await set_payment_details(card_number)
+            await update.message.reply_text(f"✅ Номер карты для оплаты обновлён: {card_number}")
 
-async def set_about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_owner(update.effective_user.id):
-        await update.message.reply_text("⛔ Нет прав.")
-        return
-    if not context.args:
-        await update.message.reply_text("❌ Укажите текст. Пример: /setabout Наш магазин лучший!")
-        return
-    text = ' '.join(context.args)
-    await set_about_text(text)
-    await update.message.reply_text("✅ Текст страницы «О магазине» обновлён.")
+        async def set_about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not await is_owner(update.effective_user.id):
+                await update.message.reply_text("⛔ Нет прав.")
+                return
+            if not context.args:
+                await update.message.reply_text("❌ Укажите текст. Пример: /setabout Наш магазин лучший!")
+                return
+            text = ' '.join(context.args)
+            await set_about_text(text)
+            await update.message.reply_text("✅ Текст страницы «О магазине» обновлён.")
 
-async def request_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not await is_seller(user_id):
-        await update.message.reply_text("❌ Вы не продавец.")
-        return
-    if len(context.args) != 1:
-        await update.message.reply_text("❌ Используйте: /request <ID_покупателя>")
-        return
-    try:
-        buyer_id = int(context.args[0])
-    except:
-        await update.message.reply_text("❌ Неверный ID.")
-        return
-    buyer_name = await get_user_name(buyer_id)
-    context.user_data['awaiting_request_text'] = buyer_id
-    await update.message.reply_text(f"Введите запрос (вопрос) для покупателя @{buyer_name}:")
+        async def request_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            if not await is_seller(user_id):
+                await update.message.reply_text("❌ Вы не продавец.")
+                return
+            if len(context.args) != 1:
+                await update.message.reply_text("❌ Используйте: /request <ID_покупателя>")
+                return
+            try:
+                buyer_id = int(context.args[0])
+            except:
+                await update.message.reply_text("❌ Неверный ID.")
+                return
+            buyer_name = await get_user_name(buyer_id)
+            context.user_data['awaiting_request_text'] = buyer_id
+            await update.message.reply_text(f"Введите запрос (вопрос) для покупателя @{buyer_name}:")
 
-# ================== УПРАВЛЕНИЕ ТОВАРАМИ ПРОДАВЦА ==================
-async def my_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not await is_seller(user_id):
-        await update.message.reply_text("❌ Вы не являетесь продавцом.")
-        return
-    keyboard = [
-        [InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")],
-        [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
-    ]
-    await update.message.reply_text(
-        "🏷 Управление товарами\nВыберите действие:",
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+        # ================== УПРАВЛЕНИЕ ТОВАРАМИ ==================
+        async def my_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            if not await is_seller(user_id):
+                await update.message.reply_text("❌ Вы не являетесь продавцом.")
+                return
+            keyboard = [
+                [InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")],
+                [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
+            ]
+            await update.message.reply_text(
+                "🏷 Управление товарами\nВыберите действие:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
-async def manage_sections_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    user_id = query.from_user.id
-    section = await get_seller_section(user_id)
-    if not section:
-        text = "У вас пока нет раздела. Создайте раздел:"
-        keyboard = [[InlineKeyboardButton("➕ Создать раздел", callback_data="add_section")]]
-    else:
-        text = f"📂 Ваш раздел: `{section}`\n\nВы можете изменить название или удалить раздел (все товары внутри будут удалены)."
-        keyboard = [
-            [InlineKeyboardButton("✏️ Изменить название", callback_data="rename_section")],
-            [InlineKeyboardButton("❌ Удалить раздел", callback_data="delete_section")],
-        ]
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_my_products")])
-    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def add_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    context.user_data['awaiting_section_name'] = True
-    await query.edit_message_text("Введите название нового раздела:")
-
-async def process_section_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('awaiting_section_name'):
-        return
-    user_id = update.effective_user.id
-    section_name = update.message.text.strip()
-    if not section_name:
-        await update.message.reply_text("❌ Название не может быть пустым.")
-        return
-    await set_seller_section(user_id, section_name)
-    await update.message.reply_text(f"✅ Раздел «{section_name}» создан.")
-    context.user_data.pop('awaiting_section_name', None)
-    await my_products_button(update, context)
-
-async def rename_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    context.user_data['awaiting_rename_section'] = True
-    await query.edit_message_text("Введите новое название раздела:")
-
-async def process_rename_section(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('awaiting_rename_section'):
-        return
-    user_id = update.effective_user.id
-    new_name = update.message.text.strip()
-    if not new_name:
-        await update.message.reply_text("❌ Название не может быть пустым.")
-        return
-    old_section = await get_seller_section(user_id)
-    if not old_section:
-        await update.message.reply_text("❌ Раздел не найден.")
-        context.user_data.pop('awaiting_rename_section', None)
-        return
-    await rename_seller_section(user_id, new_name)
-    await update.message.reply_text(f"✅ Раздел переименован из «{old_section}» в «{new_name}».")
-    context.user_data.pop('awaiting_rename_section', None)
-    await my_products_button(update, context)
-
-async def delete_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    user_id = query.from_user.id
-    section = await get_seller_section(user_id)
-    if not section:
-        await query.edit_message_text("❌ Раздел не найден.")
-        return
-    await delete_seller_section(user_id)
-    await query.edit_message_text(f"✅ Раздел «{section}» удалён вместе со всеми товарами.")
-    keyboard = [
-        [InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")],
-        [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
-    ]
-    await query.edit_message_text(
-        "🏷 Управление товарами\nВыберите действие:",
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    user_id = query.from_user.id
-    section = await get_seller_section(user_id)
-    if not section:
-        await query.edit_message_text("❌ Сначала создайте раздел через «Управление разделом».")
-        return
-    context.user_data['product_section'] = section
-    context.user_data['awaiting_product'] = 'name'
-    await query.edit_message_text("Введите название товара:")
-
-async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("=" * 50)
-    logger.info("process_product_input() вызвана")
-    logger.info(f"Текст: {update.message.text}")
-    logger.info(f"Состояние: {context.user_data.get('awaiting_product')}")
-    logger.info(f"user_data: {context.user_data}")
-    logger.info("=" * 50)
-    user_id = update.effective_user.id
-    if not await is_seller(user_id):
-        await update.message.reply_text("❌ Вы не продавец.")
-        return
-    state = context.user_data.get('awaiting_product')
-    if state == 'name':
-        context.user_data['product_name'] = update.message.text
-        context.user_data['awaiting_product'] = 'price'
-        await update.message.reply_text("Введите цену товара (только число):")
-    elif state == 'price':
-        try:
-            price = int(update.message.text)
-            context.user_data['product_price'] = price
-            context.user_data['awaiting_product'] = 'quantity'
-            await update.message.reply_text("Введите количество (например, «1 шт.», «3 шт.», «∞»):")
-        except:
-            await update.message.reply_text("❌ Цена должна быть числом. Попробуйте ещё раз.")
-    elif state == 'quantity':
-        quantity = update.message.text
-        context.user_data['product_quantity'] = quantity
-        context.user_data['awaiting_product'] = 'data_from'
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Покупатель должен предоставить данные", callback_data="data_from_buyer")],
-            [InlineKeyboardButton("Продавец должен предоставить данные", callback_data="data_from_seller")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="cancel_add_product")]
-        ])
-        await update.message.reply_text("Кто должен предоставить дополнительные данные?", reply_markup=keyboard)
-    elif state == 'desc':
-        name = context.user_data['product_name']
-        price = context.user_data['product_price']
-        quantity = context.user_data['product_quantity']
-        data_from = context.user_data.get('product_data_from', 'buyer')
-        desc = update.message.text
-        section = context.user_data.get('product_section')
-        if not section:
-            await update.message.reply_text("❌ Ошибка: не выбран раздел. Начните заново.")
-            context.user_data.clear()
-            return
-        logger.info("Начинаем создавать товар...")
-        logger.info(f"Данные товара: {context.user_data}")
-        logger.info(f"Товар создан. ID = {product_id}")
-        product_id = await add_product(user_id, name, price, desc, section, quantity, data_from)
-        await update.message.reply_text(f"✅ Товар «{name}» добавлен в раздел «{section}». ID: {product_id}")
-        context.user_data.clear()
-        await my_products_button(update, context)
-
-async def data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("=" * 50)
-    logger.info("data_from_callback()")
-    logger.info(f"callback_data = {update.callback_query.data}")
-    logger.info(f"user_data = {context.user_data}")
-    logger.info("=" * 50)
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    data_from = query.data.split("_")[2]
-    context.user_data['product_data_from'] = data_from
-    context.user_data['awaiting_product'] = 'desc'
-    await query.edit_message_text("Введите описание товара:")
-
-async def cancel_add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    context.user_data.clear()
-    await query.edit_message_text("❌ Добавление товара отменено.")
-    await my_products_button(update, context)
-
-async def edit_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    product_id = int(query.data.split("_")[2])
-    product = await get_product(product_id)
-    if not product or product['seller_id'] != query.from_user.id:
-        await query.edit_message_text("❌ Товар не найден или не принадлежит вам.")
-        return
-    context.user_data['edit_product_id'] = product_id
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Название", callback_data="edit_field_name")],
-        [InlineKeyboardButton("💰 Цена", callback_data="edit_field_price")],
-        [InlineKeyboardButton("📦 Количество", callback_data="edit_field_quantity")],
-        [InlineKeyboardButton("📝 Описание", callback_data="edit_field_desc")],
-        [InlineKeyboardButton("👥 Кто предоставляет данные", callback_data="edit_field_data_from")],
-        [InlineKeyboardButton("❌ Удалить товар", callback_data="delete_product")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_my_products")]
-    ])
-    await query.edit_message_text(f"Редактирование товара **{product['name']}**", parse_mode='Markdown', reply_markup=keyboard)
-
-async def edit_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    field = query.data.split("_")[2]
-    context.user_data['edit_field'] = field
-    if field == 'name':
-        await query.edit_message_text("Введите новое название:")
-    elif field == 'price':
-        await query.edit_message_text("Введите новую цену (число):")
-    elif field == 'quantity':
-        await query.edit_message_text("Введите новое количество (например, «1 шт.», «3 шт.», «∞»):")
-    elif field == 'desc':
-        await query.edit_message_text("Введите новое описание:")
-    elif field == 'data_from':
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Покупатель должен предоставить данные", callback_data="edit_data_from_buyer")],
-            [InlineKeyboardButton("Продавец должен предоставить данные", callback_data="edit_data_from_seller")],
-            [InlineKeyboardButton("🔙 Отмена", callback_data="cancel_edit")]
-        ])
-        await query.edit_message_text("Выберите, кто должен предоставить дополнительные данные:", reply_markup=keyboard)
-    else:
-        context.user_data['awaiting_edit_value'] = True
-
-async def edit_data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    data_from = query.data.split("_")[3]
-    product_id = context.user_data.get('edit_product_id')
-    if product_id:
-        await update_product(product_id, data_from=data_from)
-        await query.edit_message_text(f"✅ Настройка данных изменена: {'покупатель' if data_from == 'buyer' else 'продавец'} предоставляет данные.")
-    else:
-        await query.edit_message_text("❌ Ошибка.")
-    await edit_product_callback(update, context)
-
-async def process_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('awaiting_edit_value'):
-        return
-    product_id = context.user_data.get('edit_product_id')
-    field = context.user_data.get('edit_field')
-    new_value = update.message.text
-    product = await get_product(product_id)
-    if not product:
-        await update.message.reply_text("❌ Товар не найден.")
-        context.user_data.clear()
-        return
-    if field == 'price':
-        try:
-            new_value = int(new_value)
-        except:
-            await update.message.reply_text("❌ Цена должна быть числом.")
-            return
-    if field == 'name':
-        await update_product(product_id, name=new_value)
-        await update.message.reply_text(f"✅ Название изменено на «{new_value}».")
-    elif field == 'price':
-        await update_product(product_id, price=new_value)
-        await update.message.reply_text(f"✅ Цена изменена на {new_value} RUB.")
-    elif field == 'quantity':
-        await update_product(product_id, quantity=new_value)
-        await update.message.reply_text(f"✅ Количество изменено на {new_value}.")
-    elif field == 'desc':
-        await update_product(product_id, description=new_value)
-        await update.message.reply_text("✅ Описание обновлено.")
-    context.user_data.pop('awaiting_edit_value', None)
-    context.user_data.pop('edit_field', None)
-    await edit_product_callback(update, context)
-
-async def delete_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    product_id = context.user_data.get('edit_product_id')
-    if not product_id:
-        await query.edit_message_text("❌ Ошибка.")
-        return
-    product = await get_product(product_id)
-    if not product:
-        await query.edit_message_text("❌ Товар не найден.")
-        return
-    await delete_product(product_id)
-    await query.edit_message_text(f"✅ Товар «{product['name']}» удалён.")
-    context.user_data.clear()
-    await my_products_button(update, context)
-
-async def back_to_my_products_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    context.user_data.clear()
-    keyboard = [
-        [InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")],
-        [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
-    ]
-    await query.edit_message_text(
-        "🏷 Управление товарами\nВыберите действие:",
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def cancel_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    await edit_product_callback(update, context)
-
-# ================== СТАТИСТИКА ПРОДАВЦА ==================
-async def seller_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not await is_seller(user_id):
-        await update.message.reply_text("❌ Вы не продавец.")
-        return
-    sales = int(await redis_client.get(f"stats:seller:{user_id}:sales") or 0)
-    await update.message.reply_text(f"📊 Ваша статистика продаж\nПродано товаров: {sales}", parse_mode='Markdown')
-
-# ================== КАТАЛОГ ==================
-async def catalog_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    products = await get_all_products()
-    if not products:
-        await update.message.reply_text("📂 Пока нет категорий.")
-        return
-    sections = {}
-    for p in products:
-        sec = p['section']
-        if sec not in sections:
-            sections[sec] = p['seller_id']
-    if not sections:
-        await update.message.reply_text("📂 Пока нет категорий.")
-        return
-    text = "📂 Выберите категорию:"
-    keyboard = []
-    for sec, seller_id in sections.items():
-        keyboard.append([InlineKeyboardButton(sec, callback_data=f"category_{seller_id}_{sec}")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    parts = query.data.split("_")
-    seller_id = int(parts[1])
-    section = '_'.join(parts[2:])
-    products = await get_products_by_section(seller_id, section)
-    if not products:
-        await query.edit_message_text(f"В категории «{section}» пока нет товаров.")
-        return
-    text = f"📂 Категория: {section}\n\n"
-    for p in products:
-        qty = p.get('quantity', '')
-        if qty:
-            text += f"• {p['name']} | {p['price']} ₽ | {qty}\n"
-        else:
-            text += f"• {p['name']} | {p['price']} ₽\n"
-    text += "\nВыберите товар для покупки:"
-    keyboard = []
-    for p in products:
-        keyboard.append([InlineKeyboardButton(p['name'], callback_data=f"product_{p['id']}")])
-    keyboard.append([InlineKeyboardButton("🔙 К категориям", callback_data="back_to_catalog")])
-    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def all_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    products = await get_all_products()
-    if not products:
-        await update.message.reply_text("🛒 Пока нет товаров.")
-        return
-    groups = {}
-    for p in products:
-        sec = p['section']
-        if sec not in groups:
-            groups[sec] = []
-        groups[sec].append(p)
-    text = "🛒 Наличие товаров:\n\n"
-    for sec, prods in groups.items():
-        text += f"{sec}\n"
-        for p in prods:
-            qty = p.get('quantity', '')
-            if qty:
-                text += f"• {p['name']} | {p['price']} ₽ | {qty}\n"
+        async def manage_sections_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            user_id = query.from_user.id
+            section = await get_seller_section(user_id)
+            if not section:
+                text = "У вас пока нет раздела. Создайте раздел:"
+                keyboard = [[InlineKeyboardButton("➕ Создать раздел", callback_data="add_section")]]
             else:
-                text += f"• {p['name']} | {p['price']} ₽\n"
-        text += "\n"
-    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
-    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+                text = f"📂 Ваш раздел: `{section}`\n\nВы можете изменить название или удалить раздел (все товары внутри будут удалены)."
+                keyboard = [
+                    [InlineKeyboardButton("✏️ Изменить название", callback_data="rename_section")],
+                    [InlineKeyboardButton("❌ Удалить раздел", callback_data="delete_section")],
+                ]
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_my_products")])
+            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ================== КАРТОЧКА ТОВАРА И ПОКУПКА ==================
-async def product_detail_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    product_id = int(query.data.split("_")[1])
-    product = await get_product(product_id)
-    if not product:
-        await query.edit_message_text("❌ Товар не найден.")
-        return
-    context.user_data['buy_product_id'] = product_id
-    text = (
-        f"🧾 {product['name']}\n"
-        f"💰 Цена: {product['price']} ₽\n"
-        f"📝 Описание: {product['description']}\n\n"
-        f"Выберите количество товара, которое хотите купить:"
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("1 шт.", callback_data="buy_qty_1")],
-        [InlineKeyboardButton("5 шт.", callback_data="buy_qty_5")],
-        [InlineKeyboardButton("10 шт.", callback_data="buy_qty_10")],
-        [InlineKeyboardButton("Выбрать своё количество", callback_data="buy_qty_custom")],
-        [InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_product_{product_id}")]
-    ])
-    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=keyboard)
+        async def add_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            context.user_data['awaiting_section_name'] = True
+            await query.edit_message_text("Введите название нового раздела:")
 
-async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    data = query.data
-    if data == "buy_qty_custom":
-        context.user_data['awaiting_custom_qty'] = True
-        await query.edit_message_text("Введите нужное количество (целое число):")
-        return
-    qty = int(data.split("_")[2])
-    product_id = context.user_data.get('buy_product_id')
-    if not product_id:
-        await query.edit_message_text("❌ Ошибка: товар не выбран.")
-        return
-    product = await get_product(product_id)
-    if not product:
-        await query.edit_message_text("❌ Товар не найден.")
-        return
-    total_price = product['price'] * qty
-    user_id = query.from_user.id
-    order_id = await create_order(user_id, product_id, qty, total_price)
-    payment_card = await get_payment_details()
-    if not payment_card:
-        await query.edit_message_text("❌ Реквизиты для оплаты ещё не заданы администратором. Попробуйте позже.")
-        return
-    text = (
-        f"✅ Для оплаты совершите перевод по данному номеру:\n"
-        f"👉 `{payment_card}` (нажмите, чтобы скопировать)\n"
-        f"Сумма к оплате: {total_price} ₽\n\n"
-        f"ℹ️ Комментарии указывать не нужно, совершить оплату нужно в течение 30 минут."
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Я оплатил", callback_data=f"pay_confirmed_{order_id}")],
-        [InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_order_{order_id}")]
-    ])
-    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=keyboard)
+        async def rename_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            context.user_data['awaiting_rename_section'] = True
+            await query.edit_message_text("Введите новое название раздела:")
 
-async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('awaiting_custom_qty'):
-        return
-    try:
-        qty = int(update.message.text)
-        if qty <= 0:
-            raise ValueError
-    except:
-        await update.message.reply_text("❌ Введите корректное целое положительное число.")
-        return
-    product_id = context.user_data.get('buy_product_id')
-    if not product_id:
-        await update.message.reply_text("❌ Ошибка: товар не выбран.")
-        context.user_data.pop('awaiting_custom_qty', None)
-        return
-    product = await get_product(product_id)
-    if not product:
-        await update.message.reply_text("❌ Товар не найден.")
-        context.user_data.pop('awaiting_custom_qty', None)
-        return
-    total_price = product['price'] * qty
-    user_id = update.effective_user.id
-    order_id = await create_order(user_id, product_id, qty, total_price)
-    payment_card = await get_payment_details()
-    if not payment_card:
-        await update.message.reply_text("❌ Реквизиты для оплаты ещё не заданы администратором. Попробуйте позже.")
-        return
-    text = (
-        f"✅ Для оплаты совершите перевод по данному номеру:\n"
-        f"👉 `{payment_card}` (нажмите, чтобы скопировать)\n"
-        f"Сумма к оплате: {total_price} ₽\n\n"
-        f"ℹ️ Комментарии указывать не нужно, совершить оплату нужно в течение 30 минут."
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Я оплатил", callback_data=f"pay_confirmed_{order_id}")],
-        [InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_order_{order_id}")]
-    ])
-    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
-    context.user_data.pop('awaiting_custom_qty', None)
+        async def delete_section_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            user_id = query.from_user.id
+            section = await get_seller_section(user_id)
+            if not section:
+                await query.edit_message_text("❌ Раздел не найден.")
+                return
+            await delete_seller_section(user_id)
+            await query.edit_message_text(f"✅ Раздел «{section}» удалён вместе со всеми товарами.")
+            keyboard = [
+                [InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")],
+                [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
+            ]
+            await query.edit_message_text(
+                "🏷 Управление товарами\nВыберите действие:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
-# ================== ОБРАБОТКА ОПЛАТЫ ==================
-async def pay_confirmed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    order_id = int(query.data.split("_")[2])
-    order = await get_order(order_id)
-    if not order:
-        await query.edit_message_text("❌ Заказ не найден.")
-        return
-    if order['status'] != 'pending':
-        await query.edit_message_text("❌ Этот заказ уже был обработан.")
-        return
-    user_id = query.from_user.id
-    if order['user_id'] != user_id:
-        await query.answer("⛔ Это не ваш заказ.", show_alert=True)
-        return
-    expires = datetime.fromisoformat(order['expires'])
-    if datetime.now() > expires:
-        await query.edit_message_text("⏰ Время на оплату истекло. Заказ отменён.")
-        await update_order(order_id, status='rejected')
-        return
-    product = await get_product(order['product_id'])
-    if not product:
-        await query.edit_message_text("❌ Товар не найден.")
-        return
-    buyer_name = await get_user_name(user_id)
-    for owner_id in OWNER_IDS:
-        try:
-            await context.bot.send_message(
-                owner_id,
-                f"💳 Покупатель @{buyer_name} (ID: {user_id}) сообщает об оплате заказа #{order_id}.\n"
-                f"Товар: {product['name']}\n"
-                f"Количество: {order['quantity']} шт.\n"
-                f"Сумма: {order['total_price']} ₽\n\n"
-                f"Подтвердите оплату:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Да, оплачено", callback_data=f"confirm_pay_{order_id}")],
-                    [InlineKeyboardButton("❌ Нет, не оплачено", callback_data=f"reject_pay_{order_id}")]
+        async def add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            logger.info(f"add_product_callback вызвана пользователем {query.from_user.id}")
+            user_id = query.from_user.id
+            section = await get_seller_section(user_id)
+            if not section:
+                await query.edit_message_text("❌ Сначала создайте раздел через «Управление разделом».")
+                return
+            context.user_data['product_section'] = section
+            context.user_data['awaiting_product'] = 'name'
+            logger.info(f"Установлен awaiting_product='name' для пользователя {user_id}")
+            await query.edit_message_text("Введите название товара:")
+
+        async def data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            data_from = query.data.split("_")[2]
+            logger.info(f"data_from_callback: выбрано {data_from}")
+            context.user_data['product_data_from'] = data_from
+            context.user_data['awaiting_product'] = 'desc'
+            await query.edit_message_text("Введите описание товара:")
+
+        async def cancel_add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            context.user_data.clear()
+            await query.edit_message_text("❌ Добавление товара отменено.")
+            keyboard = [
+                [InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")],
+                [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
+            ]
+            await query.edit_message_text(
+                "🏷 Управление товарами\nВыберите действие:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+        async def edit_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            product_id = int(query.data.split("_")[2])
+            product = await get_product(product_id)
+            if not product or product['seller_id'] != query.from_user.id:
+                await query.edit_message_text("❌ Товар не найден или не принадлежит вам.")
+                return
+            context.user_data['edit_product_id'] = product_id
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Название", callback_data="edit_field_name")],
+                [InlineKeyboardButton("💰 Цена", callback_data="edit_field_price")],
+                [InlineKeyboardButton("📦 Количество", callback_data="edit_field_quantity")],
+                [InlineKeyboardButton("📝 Описание", callback_data="edit_field_desc")],
+                [InlineKeyboardButton("👥 Кто предоставляет данные", callback_data="edit_field_data_from")],
+                [InlineKeyboardButton("❌ Удалить товар", callback_data="delete_product")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_my_products")]
+            ])
+            await query.edit_message_text(f"Редактирование товара **{product['name']}**", parse_mode='Markdown',
+                                          reply_markup=keyboard)
+
+        async def edit_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            field = query.data.split("_")[2]
+            context.user_data['edit_field'] = field
+            if field == 'name':
+                await query.edit_message_text("Введите новое название:")
+            elif field == 'price':
+                await query.edit_message_text("Введите новую цену (число):")
+            elif field == 'quantity':
+                await query.edit_message_text("Введите новое количество (например, «1 шт.», «3 шт.», «∞»):")
+            elif field == 'desc':
+                await query.edit_message_text("Введите новое описание:")
+            elif field == 'data_from':
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Покупатель должен предоставить данные",
+                                          callback_data="edit_data_from_buyer")],
+                    [InlineKeyboardButton("Продавец должен предоставить данные",
+                                          callback_data="edit_data_from_seller")],
+                    [InlineKeyboardButton("🔙 Отмена", callback_data="cancel_edit")]
                 ])
-            )
-        except:
-            pass
-    await query.edit_message_text(
-        "✅ Ваше уведомление об оплате отправлено администратору. Ожидайте подтверждения.\n"
-        "Как только оплата будет подтверждена, вы получите товар."
-    )
-    await update_order(order_id, status='paid')
+                await query.edit_message_text("Выберите, кто должен предоставить дополнительные данные:",
+                                              reply_markup=keyboard)
+            else:
+                context.user_data['awaiting_edit_value'] = True
 
-async def confirm_pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    if not await is_owner(query.from_user.id):
-        await query.answer("⛔ Нет прав.", show_alert=True)
-        return
-    await query.answer()
-    order_id = int(query.data.split("_")[2])
-    order = await get_order(order_id)
-    if not order or order['status'] not in ('pending', 'paid'):
-        await query.edit_message_text("❌ Заказ не найден или уже обработан.")
-        return
-    await update_order(order_id, status='confirmed')
-    user_id = order['user_id']
-    product_id = order['product_id']
-    product = await get_product(product_id)
-    if not product:
-        await query.edit_message_text("❌ Товар не найден.")
-        return
-    buyer_name = await get_user_name(user_id)
-    await query.edit_message_text(f"✅ Оплата заказа #{order_id} подтверждена. Товар отправлен покупателю @{buyer_name}.")
-    try:
-        if product.get('data_from') == 'seller':
-            await context.bot.send_message(
-                user_id,
-                f"✅ Ваша оплата подтверждена! Продавец свяжется с вами для передачи товара."
+        async def edit_data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            data_from = query.data.split("_")[3]
+            product_id = context.user_data.get('edit_product_id')
+            if product_id:
+                await update_product(product_id, data_from=data_from)
+                await query.edit_message_text(
+                    f"✅ Настройка данных изменена: {'покупатель' if data_from == 'buyer' else 'продавец'} предоставляет данные.")
+            else:
+                await query.edit_message_text("❌ Ошибка.")
+            await edit_product_callback(update, context)
+
+        async def delete_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            product_id = context.user_data.get('edit_product_id')
+            if not product_id:
+                await query.edit_message_text("❌ Ошибка.")
+                return
+            product = await get_product(product_id)
+            if not product:
+                await query.edit_message_text("❌ Товар не найден.")
+                return
+            await delete_product(product_id)
+            await query.edit_message_text(f"✅ Товар «{product['name']}» удалён.")
+            context.user_data.clear()
+            await my_products_button(update, context)
+
+        async def back_to_my_products_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            context.user_data.clear()
+            keyboard = [
+                [InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")],
+                [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
+            ]
+            await query.edit_message_text(
+                "🏷 Управление товарами\nВыберите действие:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
-            seller_id = product['seller_id']
-            await context.bot.send_message(
-                seller_id,
-                f"📦 Покупатель @{buyer_name} оплатил товар «{product['name']}».\n"
-                f"Вам необходимо отправить покупателю товар (файл или текст).\n"
-                f"Используйте кнопку ниже, чтобы отправить товар покупателю.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📤 Отправить товар покупателю", callback_data=f"deliver_{product_id}_{user_id}")]
+
+        async def cancel_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            await edit_product_callback(update, context)
+
+        # ================== СТАТИСТИКА ПРОДАВЦА ==================
+        async def seller_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            if not await is_seller(user_id):
+                await update.message.reply_text("❌ Вы не продавец.")
+                return
+            sales = int(await redis_client.get(f"stats:seller:{user_id}:sales") or 0)
+            await update.message.reply_text(f"📊 Ваша статистика продаж\nПродано товаров: {sales}",
+                                            parse_mode='Markdown')
+
+        # ================== КАТАЛОГ ==================
+        async def catalog_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            products = await get_all_products()
+            if not products:
+                await update.message.reply_text("📂 Пока нет категорий.")
+                return
+            sections = {}
+            for p in products:
+                sec = p['section']
+                if sec not in sections:
+                    sections[sec] = p['seller_id']
+            if not sections:
+                await update.message.reply_text("📂 Пока нет категорий.")
+                return
+            text = "📂 Выберите категорию:"
+            keyboard = []
+            for sec, seller_id in sections.items():
+                keyboard.append([InlineKeyboardButton(sec, callback_data=f"category_{seller_id}_{sec}")])
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
+            await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+        async def category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            parts = query.data.split("_")
+            seller_id = int(parts[1])
+            section = '_'.join(parts[2:])
+            products = await get_products_by_section(seller_id, section)
+            if not products:
+                await query.edit_message_text(f"В категории «{section}» пока нет товаров.")
+                return
+            text = f"📂 Категория: {section}\n\n"
+            for p in products:
+                qty = p.get('quantity', '')
+                if qty:
+                    text += f"• {p['name']} | {p['price']} ₽ | {qty}\n"
+                else:
+                    text += f"• {p['name']} | {p['price']} ₽\n"
+            text += "\nВыберите товар для покупки:"
+            keyboard = []
+            for p in products:
+                keyboard.append([InlineKeyboardButton(p['name'], callback_data=f"product_{p['id']}")])
+            keyboard.append([InlineKeyboardButton("🔙 К категориям", callback_data="back_to_catalog")])
+            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+        async def all_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            products = await get_all_products()
+            if not products:
+                await update.message.reply_text("🛒 Пока нет товаров.")
+                return
+            groups = {}
+            for p in products:
+                sec = p['section']
+                if sec not in groups:
+                    groups[sec] = []
+                groups[sec].append(p)
+            text = "🛒 Наличие товаров:\n\n"
+            for sec, prods in groups.items():
+                text += f"{sec}\n"
+                for p in prods:
+                    qty = p.get('quantity', '')
+                    if qty:
+                        text += f"• {p['name']} | {p['price']} ₽ | {qty}\n"
+                    else:
+                        text += f"• {p['name']} | {p['price']} ₽\n"
+                text += "\n"
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
+            await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+        # ================== КАРТОЧКА ТОВАРА И ПОКУПКА ==================
+        async def product_detail_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            product_id = int(query.data.split("_")[1])
+            product = await get_product(product_id)
+            if not product:
+                await query.edit_message_text("❌ Товар не найден.")
+                return
+            context.user_data['buy_product_id'] = product_id
+            text = (
+                f"🧾 {product['name']}\n"
+                f"💰 Цена: {product['price']} ₽\n"
+                f"📝 Описание: {product['description']}\n\n"
+                f"Выберите количество товара, которое хотите купить:"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("1 шт.", callback_data="buy_qty_1")],
+                [InlineKeyboardButton("5 шт.", callback_data="buy_qty_5")],
+                [InlineKeyboardButton("10 шт.", callback_data="buy_qty_10")],
+                [InlineKeyboardButton("Выбрать своё количество", callback_data="buy_qty_custom")],
+                [InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_product_{product_id}")]
+            ])
+            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=keyboard)
+
+        async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            data = query.data
+            if data == "buy_qty_custom":
+                context.user_data['awaiting_custom_qty'] = True
+                await query.edit_message_text("Введите нужное количество (целое число):")
+                return
+            qty = int(data.split("_")[2])
+            product_id = context.user_data.get('buy_product_id')
+            if not product_id:
+                await query.edit_message_text("❌ Ошибка: товар не выбран.")
+                return
+            product = await get_product(product_id)
+            if not product:
+                await query.edit_message_text("❌ Товар не найден.")
+                return
+            total_price = product['price'] * qty
+            user_id = query.from_user.id
+            order_id = await create_order(user_id, product_id, qty, total_price)
+            payment_card = await get_payment_details()
+            if not payment_card:
+                await query.edit_message_text("❌ Реквизиты для оплаты ещё не заданы администратором. Попробуйте позже.")
+                return
+            text = (
+                f"✅ Для оплаты совершите перевод по данному номеру:\n"
+                f"👉 `{payment_card}` (нажмите, чтобы скопировать)\n"
+                f"Сумма к оплате: {total_price} ₽\n\n"
+                f"ℹ️ Комментарии указывать не нужно, совершить оплату нужно в течение 30 минут."
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Я оплатил", callback_data=f"pay_confirmed_{order_id}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_order_{order_id}")]
+            ])
+            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=keyboard)
+
+        async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not context.user_data.get('awaiting_custom_qty'):
+                return
+            try:
+                qty = int(update.message.text)
+                if qty <= 0:
+                    raise ValueError
+            except:
+                await update.message.reply_text("❌ Введите корректное целое положительное число.")
+                return
+            product_id = context.user_data.get('buy_product_id')
+            if not product_id:
+                await update.message.reply_text("❌ Ошибка: товар не выбран.")
+                context.user_data.pop('awaiting_custom_qty', None)
+                return
+            product = await get_product(product_id)
+            if not product:
+                await update.message.reply_text("❌ Товар не найден.")
+                context.user_data.pop('awaiting_custom_qty', None)
+                return
+            total_price = product['price'] * qty
+            user_id = update.effective_user.id
+            order_id = await create_order(user_id, product_id, qty, total_price)
+            payment_card = await get_payment_details()
+            if not payment_card:
+                await update.message.reply_text(
+                    "❌ Реквизиты для оплаты ещё не заданы администратором. Попробуйте позже.")
+                return
+            text = (
+                f"✅ Для оплаты совершите перевод по данному номеру:\n"
+                f"👉 `{payment_card}` (нажмите, чтобы скопировать)\n"
+                f"Сумма к оплате: {total_price} ₽\n\n"
+                f"ℹ️ Комментарии указывать не нужно, совершить оплату нужно в течение 30 минут."
+            )
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Я оплатил", callback_data=f"pay_confirmed_{order_id}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_order_{order_id}")]
+            ])
+            await update.message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
+            context.user_data.pop('awaiting_custom_qty', None)
+
+        # ================== ОБРАБОТКА ОПЛАТЫ ==================
+        async def pay_confirmed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            order_id = int(query.data.split("_")[2])
+            order = await get_order(order_id)
+            if not order:
+                await query.edit_message_text("❌ Заказ не найден.")
+                return
+            if order['status'] != 'pending':
+                await query.edit_message_text("❌ Этот заказ уже был обработан.")
+                return
+            user_id = query.from_user.id
+            if order['user_id'] != user_id:
+                await query.answer("⛔ Это не ваш заказ.", show_alert=True)
+                return
+            expires = datetime.fromisoformat(order['expires'])
+            if datetime.now() > expires:
+                await query.edit_message_text("⏰ Время на оплату истекло. Заказ отменён.")
+                await update_order(order_id, status='rejected')
+                return
+            product = await get_product(order['product_id'])
+            if not product:
+                await query.edit_message_text("❌ Товар не найден.")
+                return
+            buyer_name = await get_user_name(user_id)
+            for owner_id in OWNER_IDS:
+                try:
+                    await context.bot.send_message(
+                        owner_id,
+                        f"💳 Покупатель @{buyer_name} (ID: {user_id}) сообщает об оплате заказа #{order_id}.\n"
+                        f"Товар: {product['name']}\n"
+                        f"Количество: {order['quantity']} шт.\n"
+                        f"Сумма: {order['total_price']} ₽\n\n"
+                        f"Подтвердите оплату:",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("✅ Да, оплачено", callback_data=f"confirm_pay_{order_id}")],
+                            [InlineKeyboardButton("❌ Нет, не оплачено", callback_data=f"reject_pay_{order_id}")]
+                        ])
+                    )
+                except:
+                    pass
+            await query.edit_message_text(
+                "✅ Ваше уведомление об оплате отправлено администратору. Ожидайте подтверждения.\n"
+                "Как только оплата будет подтверждена, вы получите товар."
+            )
+            await update_order(order_id, status='paid')
+
+        async def confirm_pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            if not await is_owner(query.from_user.id):
+                await query.answer("⛔ Нет прав.", show_alert=True)
+                return
+            await query.answer()
+            order_id = int(query.data.split("_")[2])
+            order = await get_order(order_id)
+            if not order or order['status'] not in ('pending', 'paid'):
+                await query.edit_message_text("❌ Заказ не найден или уже обработан.")
+                return
+            await update_order(order_id, status='confirmed')
+            user_id = order['user_id']
+            product_id = order['product_id']
+            product = await get_product(product_id)
+            if not product:
+                await query.edit_message_text("❌ Товар не найден.")
+                return
+            buyer_name = await get_user_name(user_id)
+            await query.edit_message_text(
+                f"✅ Оплата заказа #{order_id} подтверждена. Товар отправлен покупателю @{buyer_name}.")
+            try:
+                if product.get('data_from') == 'seller':
+                    await context.bot.send_message(
+                        user_id,
+                        f"✅ Ваша оплата подтверждена! Продавец свяжется с вами для передачи товара."
+                    )
+                    seller_id = product['seller_id']
+                    await context.bot.send_message(
+                        seller_id,
+                        f"📦 Покупатель @{buyer_name} оплатил товар «{product['name']}».\n"
+                        f"Вам необходимо отправить покупателю товар (файл или текст).\n"
+                        f"Используйте кнопку ниже, чтобы отправить товар покупателю.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📤 Отправить товар покупателю",
+                                                  callback_data=f"deliver_{product_id}_{user_id}")]
+                        ])
+                    )
+                else:
+                    await context.bot.send_message(
+                        user_id,
+                        f"✅ Ваша оплата подтверждена! Продавец запросит у вас дополнительные данные (если необходимо)."
+                    )
+                    seller_id = product['seller_id']
+                    await context.bot.send_message(
+                        seller_id,
+                        f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Используйте команду /request {user_id} для запроса дополнительных данных."
+                    )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке уведомлений: {e}")
+
+        async def reject_pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            if not await is_owner(query.from_user.id):
+                await query.answer("⛔ Нет прав.", show_alert=True)
+                return
+            await query.answer()
+            order_id = int(query.data.split("_")[2])
+            order = await get_order(order_id)
+            if not order or order['status'] not in ('pending', 'paid'):
+                await query.edit_message_text("❌ Заказ не найден или уже обработан.")
+                return
+            await update_order(order_id, status='rejected')
+            user_id = order['user_id']
+            await query.edit_message_text(f"❌ Оплата заказа #{order_id} отклонена. Покупатель уведомлён.")
+            try:
+                await context.bot.send_message(
+                    user_id,
+                    f"❌ Ваша оплата заказа #{order_id} отклонена администратором. Пожалуйста, свяжитесь с поддержкой."
+                )
+            except:
+                pass
+
+        async def cancel_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            order_id = int(query.data.split("_")[2])
+            order = await get_order(order_id)
+            if not order:
+                await query.edit_message_text("❌ Заказ не найден.")
+                return
+            if order['user_id'] != query.from_user.id:
+                await query.answer("⛔ Это не ваш заказ.", show_alert=True)
+                return
+            if order['status'] != 'pending':
+                await query.edit_message_text("❌ Этот заказ уже не может быть отменён.")
+                return
+            await update_order(order_id, status='rejected')
+            await query.edit_message_text("❌ Заказ отменён.")
+
+        # ================== ДОСТАВКА ТОВАРА ==================
+        async def deliver_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            parts = query.data.split("_")
+            product_id = int(parts[1])
+            buyer_id = int(parts[2])
+            seller_id = query.from_user.id
+            product = await get_product(product_id)
+            if not product or product['seller_id'] != seller_id:
+                await query.edit_message_text("❌ Ошибка: товар не найден или вы не являетесь продавцом.")
+                return
+            context.user_data['delivery'] = {'product_id': product_id, 'buyer_id': buyer_id}
+            await query.edit_message_text("Отправьте файл или текст, который нужно передать покупателю как товар.")
+
+        async def process_delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if 'delivery' not in context.user_data:
+                return
+            delivery = context.user_data['delivery']
+            product_id = delivery['product_id']
+            buyer_id = delivery['buyer_id']
+            product = await get_product(product_id)
+            if not product:
+                await update.message.reply_text("❌ Товар не найден.")
+                context.user_data.pop('delivery', None)
+                return
+            if update.message.document:
+                await context.bot.send_document(buyer_id, update.message.document.file_id,
+                                                caption=f"Ваш товар: {product['name']}")
+            elif update.message.text:
+                await context.bot.send_message(buyer_id, f"Ваш товар «{product['name']}»:\n\n{update.message.text}")
+            else:
+                await update.message.reply_text("❌ Поддерживаются только текстовые сообщения и файлы.")
+                return
+            await update.message.reply_text("✅ Товар отправлен покупателю.")
+            context.user_data.pop('delivery', None)
+
+        # ================== ЗАПРОС ДАННЫХ У ПОКУПАТЕЛЯ ==================
+        async def process_request_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if 'awaiting_request_text' not in context.user_data:
+                return
+            buyer_id = context.user_data['awaiting_request_text']
+            seller_id = update.effective_user.id
+            request_text = update.message.text
+            buyer_name = await get_user_name(buyer_id)
+            try:
+                await context.bot.send_message(
+                    buyer_id,
+                    f"📝 Продавец @{await get_user_name(seller_id)} запрашивает дополнительную информацию:\n\n{request_text}\n\nПожалуйста, ответьте на это сообщение, отправив нужные данные (ссылку, скриншот и т.д.)."
+                )
+                await update.message.reply_text(f"✅ Запрос отправлен покупателю @{buyer_name}.")
+            except:
+                await update.message.reply_text(
+                    "❌ Не удалось отправить сообщение покупателю (возможно, он заблокировал бота).")
+            context.user_data.pop('awaiting_request_text', None)
+
+        # ================== ПРОФИЛЬ, О МАГАЗИНЕ, ПОМОЩЬ ==================
+        async def about_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            text = await get_about_text()
+            await update.message.reply_text(text, parse_mode='Markdown')
+
+        async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            purchases = int(await redis_client.get(f"stats:user:{user_id}:purchases") or 0)
+            seller_status = await is_seller(user_id)
+            status = "Продавец" if seller_status else "Покупатель"
+            text = (
+                f"👤 Ваш профиль\n"
+                f"ID: `{user_id}`\n"
+                f"Статус: {status}\n"
+                f"🛒 Куплено товаров: {purchases}\n"
+            )
+            await update.message.reply_text(text, parse_mode='Markdown')
+
+        async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            context.user_data.clear()
+            await send_main_keyboard(update, "Главное меню")
+
+        async def back_to_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            product_id = int(query.data.split("_")[3])
+            await product_detail_callback(update, context)
+
+        async def back_to_catalog_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+            await catalog_button(update, context)
+
+        # ================== УНИВЕРСАЛЬНЫЙ РОУТЕР ТЕКСТОВЫХ СООБЩЕНИЙ ==================
+        async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            text = update.message.text.strip()
+            logger.info(
+                f"text_router: user={user_id}, text='{text}', state={context.user_data.get('awaiting_product')}")
+
+            # 1. Создание раздела
+            if context.user_data.get('awaiting_section_name'):
+                await process_section_name(update, context)
+                return
+
+            # 2. Переименование раздела
+            if context.user_data.get('awaiting_rename_section'):
+                await process_rename_section(update, context)
+                return
+
+            # 3. Добавление товара
+            if context.user_data.get('awaiting_product'):
+                await process_product_input(update, context)
+                return
+
+            # 4. Редактирование товара
+            if context.user_data.get('awaiting_edit_value'):
+                await process_edit_value(update, context)
+                return
+
+            # 5. Своё количество при покупке
+            if context.user_data.get('awaiting_custom_qty'):
+                await process_custom_qty(update, context)
+                return
+
+            # 6. Доставка товара (отправка файла/текста)
+            if context.user_data.get('delivery'):
+                await process_delivery(update, context)
+                return
+
+            # 7. Запрос данных у покупателя
+            if context.user_data.get('awaiting_request_text'):
+                await process_request_text(update, context)
+                return
+
+            # Если ни одно состояние не подходит
+            await update.message.reply_text("❓ Неизвестная команда. Используйте /start для навигации.")
+
+        # ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РОУТЕРА ==================
+        async def process_section_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            section_name = update.message.text.strip()
+            if not section_name:
+                await update.message.reply_text("❌ Название не может быть пустым.")
+                return
+            await set_seller_section(user_id, section_name)
+            await update.message.reply_text(f"✅ Раздел «{section_name}» создан.")
+            context.user_data.pop('awaiting_section_name', None)
+            await my_products_button(update, context)
+
+        async def process_rename_section(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            new_name = update.message.text.strip()
+            if not new_name:
+                await update.message.reply_text("❌ Название не может быть пустым.")
+                return
+            old_section = await get_seller_section(user_id)
+            if not old_section:
+                await update.message.reply_text("❌ Раздел не найден.")
+                context.user_data.pop('awaiting_rename_section', None)
+                return
+            await rename_seller_section(user_id, new_name)
+            await update.message.reply_text(f"✅ Раздел переименован из «{old_section}» в «{new_name}».")
+            context.user_data.pop('awaiting_rename_section', None)
+            await my_products_button(update, context)
+
+        async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            if not await is_seller(user_id):
+                await update.message.reply_text("❌ Вы не продавец.")
+                return
+            state = context.user_data.get('awaiting_product')
+            logger.info(f"process_product_input: state={state}, text={update.message.text}")
+
+            if state == 'name':
+                context.user_data['product_name'] = update.message.text
+                context.user_data['awaiting_product'] = 'price'
+                await update.message.reply_text("Введите цену товара (только число):")
+
+            elif state == 'price':
+                try:
+                    price = int(update.message.text)
+                    context.user_data['product_price'] = price
+                    context.user_data['awaiting_product'] = 'quantity'
+                    await update.message.reply_text("Введите количество (например, «1 шт.», «3 шт.», «∞»):")
+                except ValueError:
+                    await update.message.reply_text("❌ Цена должна быть числом. Попробуйте ещё раз.")
+
+            elif state == 'quantity':
+                quantity = update.message.text
+                context.user_data['product_quantity'] = quantity
+                context.user_data['awaiting_product'] = 'data_from'
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Покупатель должен предоставить данные", callback_data="data_from_buyer")],
+                    [InlineKeyboardButton("Продавец должен предоставить данные", callback_data="data_from_seller")],
+                    [InlineKeyboardButton("❌ Отмена", callback_data="cancel_add_product")]
                 ])
-            )
-        else:
-            await context.bot.send_message(
-                user_id,
-                f"✅ Ваша оплата подтверждена! Продавец запросит у вас дополнительные данные (если необходимо)."
-            )
-            seller_id = product['seller_id']
-            await context.bot.send_message(
-                seller_id,
-                f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Используйте команду /request {user_id} для запроса дополнительных данных."
-            )
-    except Exception as e:
-        logger.error(f"Ошибка при отправке уведомлений: {e}")
+                await update.message.reply_text("Кто должен предоставить дополнительные данные?", reply_markup=keyboard)
 
-async def reject_pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    if not await is_owner(query.from_user.id):
-        await query.answer("⛔ Нет прав.", show_alert=True)
-        return
-    await query.answer()
-    order_id = int(query.data.split("_")[2])
-    order = await get_order(order_id)
-    if not order or order['status'] not in ('pending', 'paid'):
-        await query.edit_message_text("❌ Заказ не найден или уже обработан.")
-        return
-    await update_order(order_id, status='rejected')
-    user_id = order['user_id']
-    await query.edit_message_text(f"❌ Оплата заказа #{order_id} отклонена. Покупатель уведомлён.")
-    try:
-        await context.bot.send_message(
-            user_id,
-            f"❌ Ваша оплата заказа #{order_id} отклонена администратором. Пожалуйста, свяжитесь с поддержкой."
-        )
-    except:
-        pass
+            elif state == 'desc':
+                name = context.user_data.get('product_name')
+                price = context.user_data.get('product_price')
+                quantity = context.user_data.get('product_quantity')
+                data_from = context.user_data.get('product_data_from', 'buyer')
+                desc = update.message.text
+                section = context.user_data.get('product_section')
+                if not section:
+                    await update.message.reply_text("❌ Ошибка: не выбран раздел. Начните заново.")
+                    context.user_data.clear()
+                    return
+                logger.info(f"Добавляем товар: name={name}, price={price}, section={section}, data_from={data_from}")
+                product_id = await add_product(user_id, name, price, desc, section, quantity, data_from)
+                await update.message.reply_text(f"✅ Товар «{name}» добавлен в раздел «{section}». ID: {product_id}")
+                context.user_data.clear()
+                await my_products_button(update, context)
 
-async def cancel_order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    order_id = int(query.data.split("_")[2])
-    order = await get_order(order_id)
-    if not order:
-        await query.edit_message_text("❌ Заказ не найден.")
-        return
-    if order['user_id'] != query.from_user.id:
-        await query.answer("⛔ Это не ваш заказ.", show_alert=True)
-        return
-    if order['status'] != 'pending':
-        await query.edit_message_text("❌ Этот заказ уже не может быть отменён.")
-        return
-    await update_order(order_id, status='rejected')
-    await query.edit_message_text("❌ Заказ отменён.")
+            else:
+                await update.message.reply_text("❓ Неизвестная команда. Начните заново через /start.")
 
-# ================== ДОСТАВКА ТОВАРА ==================
-async def deliver_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    parts = query.data.split("_")
-    product_id = int(parts[1])
-    buyer_id = int(parts[2])
-    seller_id = query.from_user.id
-    product = await get_product(product_id)
-    if not product or product['seller_id'] != seller_id:
-        await query.edit_message_text("❌ Ошибка: товар не найден или вы не являетесь продавцом.")
-        return
-    context.user_data['delivery'] = {'product_id': product_id, 'buyer_id': buyer_id}
-    await query.edit_message_text("Отправьте файл или текст, который нужно передать покупателю как товар.")
+        async def process_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not context.user_data.get('awaiting_edit_value'):
+                return
+            product_id = context.user_data.get('edit_product_id')
+            field = context.user_data.get('edit_field')
+            new_value = update.message.text
+            product = await get_product(product_id)
+            if not product:
+                await update.message.reply_text("❌ Товар не найден.")
+                context.user_data.clear()
+                return
+            if field == 'price':
+                try:
+                    new_value = int(new_value)
+                except:
+                    await update.message.reply_text("❌ Цена должна быть числом.")
+                    return
+            if field == 'name':
+                await update_product(product_id, name=new_value)
+                await update.message.reply_text(f"✅ Название изменено на «{new_value}».")
+            elif field == 'price':
+                await update_product(product_id, price=new_value)
+                await update.message.reply_text(f"✅ Цена изменена на {new_value} RUB.")
+            elif field == 'quantity':
+                await update_product(product_id, quantity=new_value)
+                await update.message.reply_text(f"✅ Количество изменено на {new_value}.")
+            elif field == 'desc':
+                await update_product(product_id, description=new_value)
+                await update.message.reply_text("✅ Описание обновлено.")
+            context.user_data.pop('awaiting_edit_value', None)
+            context.user_data.pop('edit_field', None)
+            await edit_product_callback(update, context)
 
-async def process_delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'delivery' not in context.user_data:
-        return
-    delivery = context.user_data['delivery']
-    product_id = delivery['product_id']
-    buyer_id = delivery['buyer_id']
-    product = await get_product(product_id)
-    if not product:
-        await update.message.reply_text("❌ Товар не найден.")
-        context.user_data.pop('delivery', None)
-        return
-    if update.message.document:
-        await context.bot.send_document(buyer_id, update.message.document.file_id, caption=f"Ваш товар: {product['name']}")
-    elif update.message.text:
-        await context.bot.send_message(buyer_id, f"Ваш товар «{product['name']}»:\n\n{update.message.text}")
-    else:
-        await update.message.reply_text("❌ Поддерживаются только текстовые сообщения и файлы.")
-        return
-    await update.message.reply_text("✅ Товар отправлен покупателю.")
-    context.user_data.pop('delivery', None)
+        # ================== ВЕБ-СЕРВЕР ==================
+        async def health(request):
+            return web.Response(text="OK")
 
-# ================== ЗАПРОС ДАННЫХ У ПОКУПАТЕЛЯ ==================
-async def process_request_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'awaiting_request_text' not in context.user_data:
-        return
-    buyer_id = context.user_data['awaiting_request_text']
-    seller_id = update.effective_user.id
-    request_text = update.message.text
-    buyer_name = await get_user_name(buyer_id)
-    try:
-        await context.bot.send_message(
-            buyer_id,
-            f"📝 Продавец @{await get_user_name(seller_id)} запрашивает дополнительную информацию:\n\n{request_text}\n\nПожалуйста, ответьте на это сообщение, отправив нужные данные (ссылку, скриншот и т.д.)."
-        )
-        await update.message.reply_text(f"✅ Запрос отправлен покупателю @{buyer_name}.")
-    except:
-        await update.message.reply_text("❌ Не удалось отправить сообщение покупателю (возможно, он заблокировал бота).")
-    context.user_data.pop('awaiting_request_text', None)
+        # ================== ПОДДЕРЖАНИЕ АКТИВНОСТИ ==================
+        async def keep_alive():
+            while True:
+                await asyncio.sleep(300)
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        url = f"http://localhost:{os.environ.get('PORT', 10000)}/health"
+                        async with session.get(url) as resp:
+                            await resp.read()
+                except Exception as e:
+                    print(f"❌ Ошибка в keep_alive: {e}")
 
-# ================== ПРОФИЛЬ, О МАГАЗИНЕ, ПОМОЩЬ ==================
-async def about_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = await get_about_text()
-    await update.message.reply_text(text, parse_mode='Markdown')
+        # ================== ГЛАВНАЯ ФУНКЦИЯ ==================
+        async def main():
+            global bot_app
+            logger.info("Запуск бота...")
+            if REDIS_URL:
+                await init_redis()
+            else:
+                logger.warning("REDIS_URL не задан! Данные не будут сохраняться.")
 
-async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    purchases = int(await redis_client.get(f"stats:user:{user_id}:purchases") or 0)
-    seller_status = await is_seller(user_id)
-    status = "Продавец" if seller_status else "Покупатель"
-    text = (
-        f"👤 Ваш профиль\n"
-        f"ID: `{user_id}`\n"
-        f"Статус: {status}\n"
-        f"🛒 Куплено товаров: {purchases}\n"
-    )
-    await update.message.reply_text(text, parse_mode='Markdown')
+            application = ApplicationBuilder().token(BOT_TOKEN).build()
+            bot_app = application
 
-async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    context.user_data.clear()
-    await send_main_keyboard(update, "Главное меню")
+            # Команды
+            application.add_handler(CommandHandler("start", start))
+            application.add_handler(CommandHandler("help", help_command))
+            application.add_handler(CommandHandler("addseller", add_seller_command))
+            application.add_handler(CommandHandler("removeseller", remove_seller_command))
+            application.add_handler(CommandHandler("setpayment", set_payment_command))
+            application.add_handler(CommandHandler("setabout", set_about_command))
+            application.add_handler(CommandHandler("request", request_data_command))
 
-async def back_to_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    product_id = int(query.data.split("_")[3])
-    await product_detail_callback(update, context)
+            # Кнопки главного меню
+            application.add_handler(MessageHandler(filters.Text("📂 Все категории"), catalog_button))
+            application.add_handler(MessageHandler(filters.Text("🛒 Наличие товаров"), all_products_button))
+            application.add_handler(MessageHandler(filters.Text("ℹ️ О магазине"), about_button))
+            application.add_handler(MessageHandler(filters.Text("👤 Профиль"), profile_button))
+            application.add_handler(MessageHandler(filters.Text("🆘 Помощь"), help_command))
+            application.add_handler(MessageHandler(filters.Text("👑 Управление товарами"), my_products_button))
+            application.add_handler(MessageHandler(filters.Text("📊 Статистика продаж"), seller_stats_button))
 
-async def back_to_catalog_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    await catalog_button(update, context)
+            # Callback-обработчики
+            application.add_handler(CallbackQueryHandler(manage_sections_callback, pattern="^manage_sections$"))
+            application.add_handler(CallbackQueryHandler(add_section_callback, pattern="^add_section$"))
+            application.add_handler(CallbackQueryHandler(rename_section_callback, pattern="^rename_section$"))
+            application.add_handler(CallbackQueryHandler(delete_section_callback, pattern="^delete_section$"))
+            application.add_handler(CallbackQueryHandler(add_product_callback, pattern="^add_product$"))
+            application.add_handler(CallbackQueryHandler(data_from_callback, pattern="^data_from_"))
+            application.add_handler(CallbackQueryHandler(cancel_add_product_callback, pattern="^cancel_add_product$"))
+            application.add_handler(CallbackQueryHandler(edit_product_callback, pattern="^edit_prod_"))
+            application.add_handler(CallbackQueryHandler(edit_field_callback, pattern="^edit_field_"))
+            application.add_handler(CallbackQueryHandler(edit_data_from_callback, pattern="^edit_data_from_"))
+            application.add_handler(CallbackQueryHandler(delete_product_callback, pattern="^delete_product$"))
+            application.add_handler(CallbackQueryHandler(back_to_my_products_callback, pattern="^back_to_my_products$"))
+            application.add_handler(CallbackQueryHandler(category_callback, pattern="^category_"))
+            application.add_handler(CallbackQueryHandler(product_detail_callback, pattern="^product_"))
+            application.add_handler(CallbackQueryHandler(buy_qty_callback, pattern="^buy_qty_"))
+            application.add_handler(CallbackQueryHandler(pay_confirmed_callback, pattern="^pay_confirmed_"))
+            application.add_handler(CallbackQueryHandler(confirm_pay_callback, pattern="^confirm_pay_"))
+            application.add_handler(CallbackQueryHandler(reject_pay_callback, pattern="^reject_pay_"))
+            application.add_handler(CallbackQueryHandler(cancel_order_callback, pattern="^cancel_order_"))
+            application.add_handler(CallbackQueryHandler(deliver_callback, pattern="^deliver_"))
+            application.add_handler(CallbackQueryHandler(back_to_product_callback, pattern="^back_to_product_"))
+            application.add_handler(CallbackQueryHandler(back_to_catalog_callback, pattern="^back_to_catalog$"))
+            application.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
+            application.add_handler(CallbackQueryHandler(cancel_edit_callback, pattern="^cancel_edit$"))
 
-    async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Единый обработчик всех текстовых сообщений.
-        Каждое сообщение попадает сюда только один раз.
-        """
+            # Универсальный роутер для всех текстовых сообщений
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
-        # Создание раздела
-        if context.user_data.get("awaiting_section_name"):
-            return await process_section_name(update, context)
+            await application.initialize()
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            await asyncio.sleep(1)
+            await application.start()
+            await application.updater.start_polling()
+            logger.info("✅ Бот запущен и получает обновления")
 
-        # Переименование раздела
-        if context.user_data.get("awaiting_rename_section"):
-            return await process_rename_section(update, context)
+            # Веб-сервер
+            web_app = web.Application()
+            web_app.router.add_get('/health', health)
+            runner = web.AppRunner(web_app)
+            await runner.setup()
+            port = int(os.environ.get('PORT', 10000))
+            site = web.TCPSite(runner, host='0.0.0.0', port=port)
+            await site.start()
+            logger.info(f"✅ Веб-сервер запущен на порту {port}")
 
-        # Добавление товара
-        if context.user_data.get("awaiting_product"):
-            return await process_product_input(update, context)
+            asyncio.create_task(keep_alive())
+            await asyncio.Event().wait()
 
-        # Редактирование товара
-        if context.user_data.get("awaiting_edit_value"):
-            return await process_edit_value(update, context)
-
-        # Покупка (свое количество)
-        if context.user_data.get("awaiting_custom_qty"):
-            return await process_custom_qty(update, context)
-
-        # Отправка товара
-        if context.user_data.get("delivery"):
-            return await process_delivery(update, context)
-
-        # Запрос данных
-        if context.user_data.get("awaiting_request_text"):
-            return await process_request_text(update, context)
-
-# ================== ВЕБ-СЕРВЕР ==================
-async def health(request):
-    return web.Response(text="OK")
-
-# ================== ПОДДЕРЖАНИЕ АКТИВНОСТИ (БЕЗ ВЫВОДА В ЛОГИ) ==================
-async def keep_alive():
-    while True:
-        await asyncio.sleep(300)
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"http://localhost:{os.environ.get('PORT', 10000)}/health"
-                async with session.get(url) as resp:
-                    await resp.read()
-                    # Тишина – не выводим в логи
-        except Exception as e:
-            print(f"❌ Ошибка в keep_alive: {e}")
-
-# ================== ГЛАВНАЯ ФУНКЦИЯ ==================
-async def main():
-    global bot_app
-    logger.info("Запуск бота...")
-    if REDIS_URL:
-        await init_redis()
-    else:
-        logger.warning("REDIS_URL не задан! Данные не будут сохраняться.")
-
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    bot_app = application
-
-    # Команды
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("addseller", add_seller_command))
-    application.add_handler(CommandHandler("removeseller", remove_seller_command))
-    application.add_handler(CommandHandler("setpayment", set_payment_command))
-    application.add_handler(CommandHandler("setabout", set_about_command))
-    application.add_handler(CommandHandler("request", request_data_command))
-
-    # Кнопки главного меню
-    application.add_handler(MessageHandler(filters.Text("📂 Все категории"), catalog_button))
-    application.add_handler(MessageHandler(filters.Text("🛒 Наличие товаров"), all_products_button))
-    application.add_handler(MessageHandler(filters.Text("ℹ️ О магазине"), about_button))
-    application.add_handler(MessageHandler(filters.Text("👤 Профиль"), profile_button))
-    application.add_handler(MessageHandler(filters.Text("🆘 Помощь"), help_command))
-    application.add_handler(MessageHandler(filters.Text("👑 Управление товарами"), my_products_button))
-    application.add_handler(MessageHandler(filters.Text("📊 Статистика продаж"), seller_stats_button))
-
-    # Callback-обработчики
-    application.add_handler(CallbackQueryHandler(manage_sections_callback, pattern="^manage_sections$"))
-    application.add_handler(CallbackQueryHandler(add_section_callback, pattern="^add_section$"))
-    application.add_handler(CallbackQueryHandler(rename_section_callback, pattern="^rename_section$"))
-    application.add_handler(CallbackQueryHandler(delete_section_callback, pattern="^delete_section$"))
-    application.add_handler(CallbackQueryHandler(add_product_callback, pattern="^add_product$"))
-    application.add_handler(CallbackQueryHandler(data_from_callback, pattern="^data_from_"))
-    application.add_handler(CallbackQueryHandler(cancel_add_product_callback, pattern="^cancel_add_product$"))
-    application.add_handler(CallbackQueryHandler(edit_product_callback, pattern="^edit_prod_"))
-    application.add_handler(CallbackQueryHandler(edit_field_callback, pattern="^edit_field_"))
-    application.add_handler(CallbackQueryHandler(edit_data_from_callback, pattern="^edit_data_from_"))
-    application.add_handler(CallbackQueryHandler(delete_product_callback, pattern="^delete_product$"))
-    application.add_handler(CallbackQueryHandler(back_to_my_products_callback, pattern="^back_to_my_products$"))
-    application.add_handler(CallbackQueryHandler(category_callback, pattern="^category_"))
-    application.add_handler(CallbackQueryHandler(product_detail_callback, pattern="^product_"))
-    application.add_handler(CallbackQueryHandler(buy_qty_callback, pattern="^buy_qty_"))
-    application.add_handler(CallbackQueryHandler(pay_confirmed_callback, pattern="^pay_confirmed_"))
-    application.add_handler(CallbackQueryHandler(confirm_pay_callback, pattern="^confirm_pay_"))
-    application.add_handler(CallbackQueryHandler(reject_pay_callback, pattern="^reject_pay_"))
-    application.add_handler(CallbackQueryHandler(cancel_order_callback, pattern="^cancel_order_"))
-    application.add_handler(CallbackQueryHandler(deliver_callback, pattern="^deliver_"))
-    application.add_handler(CallbackQueryHandler(back_to_product_callback, pattern="^back_to_product_"))
-    application.add_handler(CallbackQueryHandler(back_to_catalog_callback, pattern="^back_to_catalog$"))
-    application.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
-    application.add_handler(CallbackQueryHandler(cancel_edit_callback, pattern="^cancel_edit$"))
-
-    # Единый обработчик текста
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, text_router)
-    )
-
-    await application.initialize()
-    await application.bot.delete_webhook(drop_pending_updates=True)
-    await asyncio.sleep(1)
-    await application.start()
-    await application.updater.start_polling()
-    logger.info("✅ Бот запущен и получает обновления")
-
-    # Веб-сервер для пинга
-    web_app = web.Application()
-    web_app.router.add_get('/health', health)
-    runner = web.AppRunner(web_app)
-    await runner.setup()
-    port = int(os.environ.get('PORT', 10000))
-    site = web.TCPSite(runner, host='0.0.0.0', port=port)
-    await site.start()
-    logger.info(f"✅ Веб-сервер запущен на порту {port}")
-
-    asyncio.create_task(keep_alive())
-    await asyncio.Event().wait()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        if __name__ == "__main__":
+            asyncio.run(main())
