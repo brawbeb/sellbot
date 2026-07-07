@@ -4,6 +4,7 @@ import logging
 import asyncio
 from datetime import datetime, timedelta
 from aiohttp import web
+import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
@@ -11,10 +12,12 @@ from telegram.ext import (
 )
 import redis.asyncio as redis
 
-# ================== НАСТРОЙКА ==================
+# ================== НАСТРОЙКА ЛОГИРОВАНИЯ ==================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-# ===============================================
+logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+# ===========================================================
 
 # ================== ПЕРЕМЕННЫЕ ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -31,14 +34,35 @@ HELP_TEXT = """
 По вопросам: @karatitik, @Pahachill
 """
 
-# ----- Redis -----
+# ================== REDIS ==================
 async def init_redis():
     global redis_client
-    logger.info("Подключение к Redis...")
-    redis_client = redis.from_url(REDIS_URL, decode_responses=True, max_connections=30)
-    await redis_client.ping()
-    logger.info("✅ Redis подключён")
+    for attempt in range(5):
+        try:
+            redis_client = redis.from_url(
+                REDIS_URL,
+                max_connections=30,
+                socket_timeout=10,
+                socket_connect_timeout=10,
+                retry_on_timeout=True,
+                decode_responses=True
+            )
+            await redis_client.ping()
+            try:
+                await redis_client.execute_command("CLIENT KILL TYPE normal")
+                print("🧹 Старые клиенты Redis отключены при старте")
+            except:
+                pass
+            print("✅ Redis подключён")
+            return
+        except Exception as e:
+            print(f"Попытка {attempt+1} подключения к Redis не удалась: {e}")
+            if attempt < 4:
+                await asyncio.sleep(3)
+            else:
+                raise
 
+# ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
 async def is_owner(user_id):
     return user_id in OWNER_IDS
 
@@ -64,7 +88,7 @@ async def get_about_text():
 async def set_about_text(text):
     await redis_client.set("global:about", text)
 
-# ----- Разделы (один на продавца) -----
+# ================== РАЗДЕЛЫ (один на продавца) ==================
 async def get_seller_section(seller_id):
     return await redis_client.get(f"seller:{seller_id}:section")
 
@@ -89,7 +113,7 @@ async def rename_seller_section(seller_id, new_name):
             await update_product(int(pid), section=new_name)
     return True
 
-# ----- Товары -----
+# ================== ТОВАРЫ ==================
 async def add_product(seller_id, name, price, description, section, quantity=None, data_from="buyer"):
     product_id = await redis_client.incr("global:product_id")
     product = {
@@ -158,7 +182,7 @@ async def get_products_by_section(seller_id, section):
     products = await get_seller_products(seller_id)
     return [p for p in products if p.get('section') == section]
 
-# ----- Заказы (для оплаты) -----
+# ================== ЗАКАЗЫ И ОПЛАТА ==================
 async def create_order(user_id, product_id, quantity, total_price):
     order_id = await redis_client.incr("global:order_id")
     order = {
@@ -186,7 +210,7 @@ async def update_order(order_id, **fields):
     await redis_client.set(f"order:{order_id}", json.dumps(order))
     return True
 
-# ----- Вспомогательные -----
+# ================== ВСПОМОГАТЕЛЬНЫЕ ДЛЯ БОТА ==================
 async def get_user_name(user_id):
     try:
         user = await bot_app.bot.get_chat(user_id)
@@ -194,7 +218,6 @@ async def get_user_name(user_id):
     except:
         return str(user_id)
 
-# ----- Клавиатуры -----
 async def send_main_keyboard(update: Update, text: str):
     user_id = update.effective_user.id
     seller_status = await is_seller(user_id)
@@ -219,7 +242,7 @@ async def send_main_keyboard(update: Update, text: str):
     else:
         await update.effective_message.reply_text(text, reply_markup=reply_markup)
 
-# ----- Старт -----
+# ================== КОМАНДЫ ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"start от {update.effective_user.id}")
     await send_main_keyboard(update, "🛍 Добро пожаловать в маркетплейс!\nИспользуйте кнопки для навигации.")
@@ -227,7 +250,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode='Markdown')
 
-# ----- Админ-команды -----
 async def add_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner(update.effective_user.id):
         await update.message.reply_text("⛔ Нет прав.")
@@ -282,7 +304,24 @@ async def set_about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_about_text(text)
     await update.message.reply_text("✅ Текст страницы «О магазине» обновлён.")
 
-# ----- Управление товарами продавца -----
+async def request_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not await is_seller(user_id):
+        await update.message.reply_text("❌ Вы не продавец.")
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("❌ Используйте: /request <ID_покупателя>")
+        return
+    try:
+        buyer_id = int(context.args[0])
+    except:
+        await update.message.reply_text("❌ Неверный ID.")
+        return
+    buyer_name = await get_user_name(buyer_id)
+    context.user_data['awaiting_request_text'] = buyer_id
+    await update.message.reply_text(f"Введите запрос (вопрос) для покупателя @{buyer_name}:")
+
+# ================== УПРАВЛЕНИЕ ТОВАРАМИ ПРОДАВЦА ==================
 async def my_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not await is_seller(user_id):
@@ -393,7 +432,6 @@ async def add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if not query:
         return
     await query.answer()
-    logger.info(f"add_product_callback вызвана пользователем {query.from_user.id}")
     user_id = query.from_user.id
     section = await get_seller_section(user_id)
     if not section:
@@ -401,7 +439,6 @@ async def add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     context.user_data['product_section'] = section
     context.user_data['awaiting_product'] = 'name'
-    logger.info(f"Установлен awaiting_product='name' для пользователя {user_id}")
     await query.edit_message_text("Введите название товара:")
 
 async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -410,7 +447,6 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ Вы не продавец.")
         return
     state = context.user_data.get('awaiting_product')
-    logger.info(f"process_product_input: user_id={user_id}, state={state}, text={update.message.text}")
     if state == 'name':
         context.user_data['product_name'] = update.message.text
         context.user_data['awaiting_product'] = 'price'
@@ -448,8 +484,6 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(f"✅ Товар «{name}» добавлен в раздел «{section}». ID: {product_id}")
         context.user_data.clear()
         await my_products_button(update, context)
-    else:
-        await update.message.reply_text("❓ Неизвестная команда. Начните заново через /start.")
 
 async def data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -588,7 +622,16 @@ async def back_to_my_products_callback(update: Update, context: ContextTypes.DEF
         return
     await query.answer()
     context.user_data.clear()
-    await my_products_button(update, context)
+    keyboard = [
+        [InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")],
+        [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
+    ]
+    await query.edit_message_text(
+        "🏷 Управление товарами\nВыберите действие:",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def cancel_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -597,7 +640,7 @@ async def cancel_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     await edit_product_callback(update, context)
 
-# ----- Статистика продавца -----
+# ================== СТАТИСТИКА ПРОДАВЦА ==================
 async def seller_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not await is_seller(user_id):
@@ -606,7 +649,7 @@ async def seller_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     sales = int(await redis_client.get(f"stats:seller:{user_id}:sales") or 0)
     await update.message.reply_text(f"📊 Ваша статистика продаж\nПродано товаров: {sales}", parse_mode='Markdown')
 
-# ----- Каталог -----
+# ================== КАТАЛОГ ==================
 async def catalog_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     products = await get_all_products()
     if not products:
@@ -677,7 +720,7 @@ async def all_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ----- Карточка товара и покупка -----
+# ================== КАРТОЧКА ТОВАРА И ПОКУПКА ==================
 async def product_detail_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -782,7 +825,7 @@ async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
     context.user_data.pop('awaiting_custom_qty', None)
 
-# ----- Обработка оплаты -----
+# ================== ОБРАБОТКА ОПЛАТЫ ==================
 async def pay_confirmed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -926,7 +969,7 @@ async def cancel_order_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await update_order(order_id, status='rejected')
     await query.edit_message_text("❌ Заказ отменён.")
 
-# ----- Доставка товара (если данные предоставляет продавец) -----
+# ================== ДОСТАВКА ТОВАРА ==================
 async def deliver_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -964,24 +1007,7 @@ async def process_delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Товар отправлен покупателю.")
     context.user_data.pop('delivery', None)
 
-# ----- Запрос данных у покупателя -----
-async def request_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not await is_seller(user_id):
-        await update.message.reply_text("❌ Вы не продавец.")
-        return
-    if len(context.args) != 1:
-        await update.message.reply_text("❌ Используйте: /request <ID_покупателя>")
-        return
-    try:
-        buyer_id = int(context.args[0])
-    except:
-        await update.message.reply_text("❌ Неверный ID.")
-        return
-    buyer_name = await get_user_name(buyer_id)
-    context.user_data['awaiting_request_text'] = buyer_id
-    await update.message.reply_text(f"Введите запрос (вопрос) для покупателя @{buyer_name}:")
-
+# ================== ЗАПРОС ДАННЫХ У ПОКУПАТЕЛЯ ==================
 async def process_request_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'awaiting_request_text' not in context.user_data:
         return
@@ -999,7 +1025,7 @@ async def process_request_text(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Не удалось отправить сообщение покупателю (возможно, он заблокировал бота).")
     context.user_data.pop('awaiting_request_text', None)
 
-# ----- Профиль, О магазине, Помощь -----
+# ================== ПРОФИЛЬ, О МАГАЗИНЕ, ПОМОЩЬ ==================
 async def about_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = await get_about_text()
     await update.message.reply_text(text, parse_mode='Markdown')
@@ -1040,11 +1066,24 @@ async def back_to_catalog_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     await catalog_button(update, context)
 
-# ----- Веб-сервер (без логов пинга) -----
+# ================== ВЕБ-СЕРВЕР ==================
 async def health(request):
     return web.Response(text="OK")
 
-# ----- ГЛАВНАЯ ФУНКЦИЯ -----
+# ================== ПОДДЕРЖАНИЕ АКТИВНОСТИ (БЕЗ ВЫВОДА В ЛОГИ) ==================
+async def keep_alive():
+    while True:
+        await asyncio.sleep(300)
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"http://localhost:{os.environ.get('PORT', 10000)}/health"
+                async with session.get(url) as resp:
+                    await resp.read()
+                    # Тишина – не выводим в логи
+        except Exception as e:
+            print(f"❌ Ошибка в keep_alive: {e}")
+
+# ================== ГЛАВНАЯ ФУНКЦИЯ ==================
 async def main():
     global bot_app
     logger.info("Запуск бота...")
@@ -1056,6 +1095,7 @@ async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     bot_app = application
 
+    # Команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("addseller", add_seller_command))
@@ -1064,6 +1104,7 @@ async def main():
     application.add_handler(CommandHandler("setabout", set_about_command))
     application.add_handler(CommandHandler("request", request_data_command))
 
+    # Кнопки главного меню
     application.add_handler(MessageHandler(filters.Text("📂 Все категории"), catalog_button))
     application.add_handler(MessageHandler(filters.Text("🛒 Наличие товаров"), all_products_button))
     application.add_handler(MessageHandler(filters.Text("ℹ️ О магазине"), about_button))
@@ -1072,6 +1113,7 @@ async def main():
     application.add_handler(MessageHandler(filters.Text("👑 Управление товарами"), my_products_button))
     application.add_handler(MessageHandler(filters.Text("📊 Статистика продаж"), seller_stats_button))
 
+    # Callback-обработчики
     application.add_handler(CallbackQueryHandler(manage_sections_callback, pattern="^manage_sections$"))
     application.add_handler(CallbackQueryHandler(add_section_callback, pattern="^add_section$"))
     application.add_handler(CallbackQueryHandler(rename_section_callback, pattern="^rename_section$"))
@@ -1097,6 +1139,7 @@ async def main():
     application.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
     application.add_handler(CallbackQueryHandler(cancel_edit_callback, pattern="^cancel_edit$"))
 
+    # Обработка текстового ввода
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_section_name))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_rename_section))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_product_input))
@@ -1112,6 +1155,7 @@ async def main():
     await application.updater.start_polling()
     logger.info("✅ Бот запущен и получает обновления")
 
+    # Веб-сервер для пинга
     web_app = web.Application()
     web_app.router.add_get('/health', health)
     runner = web.AppRunner(web_app)
@@ -1121,6 +1165,7 @@ async def main():
     await site.start()
     logger.info(f"✅ Веб-сервер запущен на порту {port}")
 
+    asyncio.create_task(keep_alive())
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
