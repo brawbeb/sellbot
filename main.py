@@ -282,7 +282,7 @@ async def set_about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_about_text(text)
     await update.message.reply_text("✅ Текст страницы «О магазине» обновлён.")
 
-# ----- Управление товарами продавца (все функции) -----
+# ----- Управление товарами продавца -----
 async def my_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not await is_seller(user_id):
@@ -294,7 +294,7 @@ async def my_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
     ]
     await update.message.reply_text(
-        "🏷 **Управление товарами**\nВыберите действие:",
+        "🏷 Управление товарами\nВыберите действие:",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -310,7 +310,7 @@ async def manage_sections_callback(update: Update, context: ContextTypes.DEFAULT
         text = "У вас пока нет раздела. Создайте раздел:"
         keyboard = [[InlineKeyboardButton("➕ Создать раздел", callback_data="add_section")]]
     else:
-        text = f"📂 **Ваш раздел:** `{section}`\n\nВы можете изменить название или удалить раздел (все товары внутри будут удалены)."
+        text = f"📂 Ваш раздел: `{section}`\n\nВы можете изменить название или удалить раздел (все товары внутри будут удалены)."
         keyboard = [
             [InlineKeyboardButton("✏️ Изменить название", callback_data="rename_section")],
             [InlineKeyboardButton("❌ Удалить раздел", callback_data="delete_section")],
@@ -324,7 +324,7 @@ async def add_section_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     await query.answer()
     context.user_data['awaiting_section_name'] = True
-    await query.edit_message_text("Введите **название** нового раздела:")
+    await query.edit_message_text("Введите название нового раздела:")
 
 async def process_section_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get('awaiting_section_name'):
@@ -345,7 +345,7 @@ async def rename_section_callback(update: Update, context: ContextTypes.DEFAULT_
         return
     await query.answer()
     context.user_data['awaiting_rename_section'] = True
-    await query.edit_message_text("Введите **новое название** раздела:")
+    await query.edit_message_text("Введите новое название раздела:")
 
 async def process_rename_section(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get('awaiting_rename_section'):
@@ -383,7 +383,7 @@ async def delete_section_callback(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
     ]
     await query.edit_message_text(
-        "🏷 **Управление товарами**\nВыберите действие:",
+        "🏷 Управление товарами\nВыберите действие:",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -393,6 +393,7 @@ async def add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if not query:
         return
     await query.answer()
+    logger.info(f"add_product_callback вызвана пользователем {query.from_user.id}")
     user_id = query.from_user.id
     section = await get_seller_section(user_id)
     if not section:
@@ -400,7 +401,8 @@ async def add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     context.user_data['product_section'] = section
     context.user_data['awaiting_product'] = 'name'
-    await query.edit_message_text("Введите **название** товара:")
+    logger.info(f"Установлен awaiting_product='name' для пользователя {user_id}")
+    await query.edit_message_text("Введите название товара:")
 
 async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -408,16 +410,17 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ Вы не продавец.")
         return
     state = context.user_data.get('awaiting_product')
+    logger.info(f"process_product_input: user_id={user_id}, state={state}, text={update.message.text}")
     if state == 'name':
         context.user_data['product_name'] = update.message.text
         context.user_data['awaiting_product'] = 'price'
-        await update.message.reply_text("Введите **цену** товара (только число):")
+        await update.message.reply_text("Введите цену товара (только число):")
     elif state == 'price':
         try:
             price = int(update.message.text)
             context.user_data['product_price'] = price
             context.user_data['awaiting_product'] = 'quantity'
-            await update.message.reply_text("Введите **количество** (например, «1 шт.», «3 шт.», «∞»):")
+            await update.message.reply_text("Введите количество (например, «1 шт.», «3 шт.», «∞»):")
         except:
             await update.message.reply_text("❌ Цена должна быть числом. Попробуйте ещё раз.")
     elif state == 'quantity':
@@ -445,6 +448,8 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(f"✅ Товар «{name}» добавлен в раздел «{section}». ID: {product_id}")
         context.user_data.clear()
         await my_products_button(update, context)
+    else:
+        await update.message.reply_text("❓ Неизвестная команда. Начните заново через /start.")
 
 async def data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -454,7 +459,7 @@ async def data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data_from = query.data.split("_")[2]
     context.user_data['product_data_from'] = data_from
     context.user_data['awaiting_product'] = 'desc'
-    await query.edit_message_text("Введите **описание** товара:")
+    await query.edit_message_text("Введите описание товара:")
 
 async def cancel_add_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -599,7 +604,7 @@ async def seller_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Вы не продавец.")
         return
     sales = int(await redis_client.get(f"stats:seller:{user_id}:sales") or 0)
-    await update.message.reply_text(f"📊 **Ваша статистика продаж**\nПродано товаров: {sales}", parse_mode='Markdown')
+    await update.message.reply_text(f"📊 Ваша статистика продаж\nПродано товаров: {sales}", parse_mode='Markdown')
 
 # ----- Каталог -----
 async def catalog_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -615,7 +620,7 @@ async def catalog_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not sections:
         await update.message.reply_text("📂 Пока нет категорий.")
         return
-    text = "📂 **Выберите категорию:**"
+    text = "📂 Выберите категорию:"
     keyboard = []
     for sec, seller_id in sections.items():
         keyboard.append([InlineKeyboardButton(sec, callback_data=f"category_{seller_id}_{sec}")])
@@ -634,13 +639,13 @@ async def category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not products:
         await query.edit_message_text(f"В категории «{section}» пока нет товаров.")
         return
-    text = f"📂 **Категория: {section}**\n\n"
+    text = f"📂 Категория: {section}\n\n"
     for p in products:
         qty = p.get('quantity', '')
         if qty:
-            text += f"• **{p['name']}** | {p['price']} ₽ | {qty}\n"
+            text += f"• {p['name']} | {p['price']} ₽ | {qty}\n"
         else:
-            text += f"• **{p['name']}** | {p['price']} ₽\n"
+            text += f"• {p['name']} | {p['price']} ₽\n"
     text += "\nВыберите товар для покупки:"
     keyboard = []
     for p in products:
@@ -659,15 +664,15 @@ async def all_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         if sec not in groups:
             groups[sec] = []
         groups[sec].append(p)
-    text = "🛒 **Наличие товаров:**\n\n"
+    text = "🛒 Наличие товаров:\n\n"
     for sec, prods in groups.items():
-        text += f"**{sec}**\n"
+        text += f"{sec}\n"
         for p in prods:
             qty = p.get('quantity', '')
             if qty:
-                text += f"• **{p['name']}** | {p['price']} ₽ | {qty}\n"
+                text += f"• {p['name']} | {p['price']} ₽ | {qty}\n"
             else:
-                text += f"• **{p['name']}** | {p['price']} ₽\n"
+                text += f"• {p['name']} | {p['price']} ₽\n"
         text += "\n"
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]]
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
@@ -685,7 +690,7 @@ async def product_detail_callback(update: Update, context: ContextTypes.DEFAULT_
         return
     context.user_data['buy_product_id'] = product_id
     text = (
-        f"🧾 **{product['name']}**\n"
+        f"🧾 {product['name']}\n"
         f"💰 Цена: {product['price']} ₽\n"
         f"📝 Описание: {product['description']}\n\n"
         f"Выберите количество товара, которое хотите купить:"
@@ -1005,7 +1010,7 @@ async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seller_status = await is_seller(user_id)
     status = "Продавец" if seller_status else "Покупатель"
     text = (
-        f"👤 **Ваш профиль**\n"
+        f"👤 Ваш профиль\n"
         f"ID: `{user_id}`\n"
         f"Статус: {status}\n"
         f"🛒 Куплено товаров: {purchases}\n"
@@ -1035,7 +1040,7 @@ async def back_to_catalog_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     await catalog_button(update, context)
 
-# ----- Веб-сервер -----
+# ----- Веб-сервер (без логов пинга) -----
 async def health(request):
     return web.Response(text="OK")
 
