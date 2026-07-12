@@ -240,7 +240,7 @@ async def check_and_decrement_quantity(product_id, requested_qty):
     new_available = available - requested_qty
     return True, new_available
 
-# ================== ЗАКАЗЫ И ОПЛАТА ==================
+# ================== ЗАКАЗЫ ==================
 async def create_order(user_id, product_id, quantity, total_price, payment_method="balance"):
     order_id = await redis_client.incr("global:order_id")
     order = {
@@ -317,12 +317,46 @@ async def helpadm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/removeseller <ID> – удалить продавца\n"
         "/setpayment <номер карты> – установить реквизиты для оплаты\n"
         "/setabout <текст> – изменить текст страницы «О магазине»\n"
+        "/orderinfo <ID> – посмотреть детали заказа\n"
         "/helpadm – эта справка"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def admhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await helpadm_command(update, context)
+
+async def orderinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_owner(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет прав.")
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Укажите ID заказа. Пример: /orderinfo 8")
+        return
+    try:
+        order_id = int(context.args[0])
+    except:
+        await update.message.reply_text("❌ Неверный ID.")
+        return
+    order = await get_order(order_id)
+    if not order:
+        await update.message.reply_text(f"❌ Заказ #{order_id} не найден.")
+        return
+    product = None
+    if order.get('product_id'):
+        product = await get_product(order['product_id'])
+    buyer_name = await get_user_name(order['user_id'])
+    text = (
+        f"📋 **Детали заказа #{order_id}**\n"
+        f"Покупатель: @{buyer_name} (ID: {order['user_id']})\n"
+        f"Товар: {product['name'] if product else 'Пополнение баланса'}\n"
+        f"Количество: {order['quantity']} шт.\n"
+        f"Сумма: {order['total_price']} RUB\n"
+        f"Статус: {order['status']}\n"
+        f"Способ оплаты: {order.get('payment_method', 'не указан')}\n"
+        f"Создан: {order['created'][:16]}\n"
+        f"Истекает: {order['expires'][:16]}"
+    )
+    await update.message.reply_text(text, parse_mode='Markdown')
 
 async def add_seller_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner(update.effective_user.id):
@@ -738,8 +772,8 @@ async def deposit_balance_callback(update: Update, context: ContextTypes.DEFAULT
     text = (
         f"💳 **Пополнение баланса**\n\n"
         f"1️⃣ Переведите сумму на следующие реквизиты:\n{payment_details}\n\n"
-        f"2️⃣ Напишите в ответ на это сообщение **сумму** (только число), которую вы перевели (например, 500).\n\n"
-        f"3️⃣ После этого отправьте **файл с чеком** (скриншот, фото) в ответ на следующее сообщение."
+        f"2️⃣ Напишите в ответ на это сообщение **сумму** (только число), которую вы перевели.\n\n"
+        f"3️⃣ После этого отправьте **файл с чеком** (скриншот, фото)."
     )
     await query.edit_message_text(text, parse_mode='Markdown')
 
@@ -751,13 +785,13 @@ async def process_deposit_amount(update: Update, context: ContextTypes.DEFAULT_T
         if amount <= 0:
             raise ValueError
     except:
-        await update.message.reply_text("❌ Введите корректную положительную сумму (например, 500).")
+        await update.message.reply_text("❌ Введите корректную положительную сумму.")
         return
     user_id = update.effective_user.id
     context.user_data['deposit_amount'] = amount
     context.user_data['awaiting_deposit_file'] = True
     await update.message.reply_text(
-        f"✅ Сумма {amount} RUB сохранена. Теперь отправьте **файл с чеком** (скриншот, фото) в ответ на это сообщение."
+        f"✅ Сумма {amount} RUB сохранена. Теперь отправьте **файл с чеком** (скриншот, фото)."
     )
 
 async def process_deposit_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -800,8 +834,7 @@ async def process_deposit_file(update: Update, context: ContextTypes.DEFAULT_TYP
         except:
             pass
     await update.message.reply_text(
-        f"✅ Ваш чек на сумму {amount} RUB отправлен на проверку. Ожидайте подтверждения администратора.\n"
-        f"После подтверждения баланс будет пополнен."
+        f"✅ Ваш чек на сумму {amount} RUB отправлен на проверку. Ожидайте подтверждения администратора."
     )
     context.user_data.clear()
 
@@ -851,7 +884,7 @@ async def reject_deposit_callback(update: Update, context: ContextTypes.DEFAULT_
     try:
         await context.bot.send_message(
             user_id,
-            f"❌ Ваше пополнение на сумму {order['total_price']} RUB отклонено администратором. Пожалуйста, свяжитесь с поддержкой."
+            f"❌ Ваше пополнение на сумму {order['total_price']} RUB отклонено администратором."
         )
     except:
         pass
@@ -906,7 +939,6 @@ async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Товар не найден.")
         return
 
-    # Проверка наличия
     ok, new_qty = await check_and_decrement_quantity(product_id, qty)
     if not ok:
         await query.edit_message_text(f"❌ Недостаточно товара. В наличии: {new_qty} шт.")
@@ -920,9 +952,7 @@ async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Списание с баланса
         await deduct_balance(user_id, total_price)
         await add_transaction(user_id, "purchase", -total_price, f"Покупка {qty} шт. товара «{product['name']}»")
-        # Обновляем количество
         await update_product(product_id, quantity=str(new_qty) if new_qty is not None else "∞")
-        # Увеличиваем статистику продаж
         seller_id = product['seller_id']
         buyer_name = await get_user_name(user_id)
         await context.bot.send_message(
@@ -946,10 +976,17 @@ async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             )
         else:
-            await query.edit_message_text(f"✅ Покупка совершена! С вашего баланса списано {total_price} RUB.\n\nЕсли продавец запросит дополнительные данные, он свяжется с вами.")
+            await query.edit_message_text(f"✅ Покупка совершена! С вашего баланса списано {total_price} RUB.\n\nПродавцу отправлено уведомление о необходимости запросить у вас дополнительные данные.")
+            # Отправляем покупателю запрос на предоставление данных
+            await context.bot.send_message(
+                user_id,
+                f"📝 Для завершения покупки товара «{product['name']}» продавцу необходимо получить от вас дополнительные данные (например, ссылку на профиль).\n"
+                f"Пожалуйста, ответьте на это сообщение, отправив нужные данные."
+            )
+            # Уведомляем продавца
             await context.bot.send_message(
                 seller_id,
-                f"💡 Для получения дополнительных данных от покупателя @{buyer_name} используйте команду:\n/request {buyer_id}"
+                f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Он получил запрос на предоставление данных. Ожидайте его ответа в личных сообщениях."
             )
     else:
         # Недостаточно баланса – предлагаем оплатить картой
@@ -957,6 +994,8 @@ async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         payment_card = await get_payment_details()
         if not payment_card:
             await query.edit_message_text("❌ Реквизиты для оплаты ещё не заданы администратором. Попробуйте позже.")
+            # Возвращаем количество
+            await update_product(product_id, quantity=product.get('quantity', '∞'))
             return
         text = (
             f"❌ Недостаточно баланса. Ваш баланс: {balance:.2f} RUB, требуется {total_price:.2f} RUB.\n\n"
@@ -1002,7 +1041,6 @@ async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE)
     balance = await get_balance(user_id)
 
     if balance >= total_price:
-        # Списание с баланса
         await deduct_balance(user_id, total_price)
         await add_transaction(user_id, "purchase", -total_price, f"Покупка {qty} шт. товара «{product['name']}»")
         await update_product(product_id, quantity=str(new_qty) if new_qty is not None else "∞")
@@ -1017,7 +1055,7 @@ async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if product.get('data_from') == 'seller':
             await update.message.reply_text(
                 f"✅ Покупка совершена! С вашего баланса списано {total_price} RUB.\n\n"
-                f"Продавец должен предоставить вам товар (файл или текст). Как только он отправит его через бота, вы получите уведомление."
+                f"Продавец должен предоставить вам товар (файл или текст)."
             )
             await context.bot.send_message(
                 seller_id,
@@ -1029,16 +1067,22 @@ async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ])
             )
         else:
-            await update.message.reply_text(f"✅ Покупка совершена! С вашего баланса списано {total_price} RUB.\n\nЕсли продавец запросит дополнительные данные, он свяжется с вами.")
+            await update.message.reply_text(f"✅ Покупка совершена! С вашего баланса списано {total_price} RUB.\n\nПродавцу отправлено уведомление о необходимости запросить у вас дополнительные данные.")
+            await context.bot.send_message(
+                user_id,
+                f"📝 Для завершения покупки товара «{product['name']}» продавцу необходимо получить от вас дополнительные данные.\n"
+                f"Пожалуйста, ответьте на это сообщение, отправив нужные данные."
+            )
             await context.bot.send_message(
                 seller_id,
-                f"💡 Для получения дополнительных данных от покупателя @{buyer_name} используйте команду:\n/request {buyer_id}"
+                f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Он получил запрос на предоставление данных. Ожидайте его ответа в личных сообщениях."
             )
     else:
         order_id = await create_order(user_id, product_id, qty, total_price, payment_method="card")
         payment_card = await get_payment_details()
         if not payment_card:
             await update.message.reply_text("❌ Реквизиты для оплаты ещё не заданы администратором. Попробуйте позже.")
+            await update_product(product_id, quantity=product.get('quantity', '∞'))
             return
         text = (
             f"❌ Недостаточно баланса. Ваш баланс: {balance:.2f} RUB, требуется {total_price:.2f} RUB.\n\n"
@@ -1076,7 +1120,6 @@ async def pay_confirmed_callback(update: Update, context: ContextTypes.DEFAULT_T
     if datetime.now() > expires:
         await query.edit_message_text("⏰ Время на оплату истекло. Заказ отменён.")
         await update_order(order_id, status='rejected')
-        # Возвращаем количество
         product = await get_product(order['product_id'])
         if product:
             qty_str = product.get('quantity')
@@ -1110,8 +1153,7 @@ async def pay_confirmed_callback(update: Update, context: ContextTypes.DEFAULT_T
         except:
             pass
     await query.edit_message_text(
-        "✅ Ваше уведомление об оплате отправлено администратору. Ожидайте подтверждения.\n"
-        "Как только оплата будет подтверждена, вы получите товар."
+        "✅ Ваше уведомление об оплате отправлено администратору. Ожидайте подтверждения."
     )
     await update_order(order_id, status='paid')
 
@@ -1136,12 +1178,6 @@ async def confirm_pay_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("❌ Товар не найден.")
         return
     buyer_name = await get_user_name(user_id)
-    seller_id = product['seller_id']
-
-    # Увеличиваем статистику продаж
-    await redis_client.incr(f"stats:seller:{seller_id}:sales", order['quantity'])
-    await redis_client.incr(f"stats:user:{user_id}:purchases", order['quantity'])
-
     await query.edit_message_text(f"✅ Оплата заказа #{order_id} подтверждена. Товар отправлен покупателю @{buyer_name}.")
     try:
         if product.get('data_from') == 'seller':
@@ -1149,6 +1185,7 @@ async def confirm_pay_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 user_id,
                 f"✅ Ваша оплата подтверждена! Продавец свяжется с вами для передачи товара."
             )
+            seller_id = product['seller_id']
             await context.bot.send_message(
                 seller_id,
                 f"📦 Покупатель @{buyer_name} оплатил товар «{product['name']}».\n"
@@ -1163,6 +1200,7 @@ async def confirm_pay_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 user_id,
                 f"✅ Ваша оплата подтверждена! Продавец запросит у вас дополнительные данные (если необходимо)."
             )
+            seller_id = product['seller_id']
             await context.bot.send_message(
                 seller_id,
                 f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Используйте команду /request {user_id} для запроса дополнительных данных."
@@ -1185,7 +1223,6 @@ async def reject_pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     await update_order(order_id, status='rejected')
     user_id = order['user_id']
-    # Возвращаем количество
     product = await get_product(order['product_id'])
     if product:
         qty_str = product.get('quantity')
@@ -1200,7 +1237,7 @@ async def reject_pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         await context.bot.send_message(
             user_id,
-            f"❌ Ваша оплата заказа #{order_id} отклонена администратором. Пожалуйста, свяжитесь с поддержкой."
+            f"❌ Ваша оплата заказа #{order_id} отклонена администратором."
         )
     except:
         pass
@@ -1222,7 +1259,6 @@ async def cancel_order_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("❌ Этот заказ уже не может быть отменён.")
         return
     await update_order(order_id, status='rejected')
-    # Возвращаем количество
     product = await get_product(order['product_id'])
     if product:
         qty_str = product.get('quantity')
@@ -1267,10 +1303,12 @@ async def process_delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_document(buyer_id, update.message.document.file_id, caption=f"Ваш товар: {product['name']}")
     elif update.message.photo:
         await context.bot.send_photo(buyer_id, update.message.photo[-1].file_id, caption=f"Ваш товар: {product['name']}")
+    elif update.message.video:
+        await context.bot.send_video(buyer_id, update.message.video.file_id, caption=f"Ваш товар: {product['name']}")
     elif update.message.text:
         await context.bot.send_message(buyer_id, f"Ваш товар «{product['name']}»:\n\n{update.message.text}")
     else:
-        await update.message.reply_text("❌ Поддерживаются только текстовые сообщения, фото и файлы.")
+        await update.message.reply_text("❌ Поддерживаются только текстовые сообщения, фото, видео и файлы.")
         return
     await update.message.reply_text("✅ Товар отправлен покупателю.")
     context.user_data.pop('delivery', None)
@@ -1286,7 +1324,7 @@ async def process_request_text(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         await context.bot.send_message(
             buyer_id,
-            f"📝 Продавец @{await get_user_name(seller_id)} запрашивает дополнительную информацию:\n\n{request_text}\n\nПожалуйста, ответьте на это сообщение, отправив нужные данные (ссылку, скриншот и т.д.)."
+            f"📝 Продавец @{await get_user_name(seller_id)} запрашивает дополнительную информацию:\n\n{request_text}\n\nПожалуйста, ответьте на это сообщение, отправив нужные данные."
         )
         await update.message.reply_text(f"✅ Запрос отправлен покупателю @{buyer_name}.")
     except:
@@ -1323,8 +1361,30 @@ async def back_to_catalog_callback(update: Update, context: ContextTypes.DEFAULT
 
 # ================== УНИВЕРСАЛЬНЫЙ РОУТЕР ==================
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    # Проверяем, есть ли update.message
+    if not update.message:
+        return
+    # Если сообщение — доставка товара (флаг delivery)
+    if context.user_data.get('delivery'):
+        await process_delivery(update, context)
+        return
+    # Если сообщение — запрос данных (awaiting_request_text)
+    if context.user_data.get('awaiting_request_text'):
+        await process_request_text(update, context)
+        return
+    # Если сообщение — пополнение (сумма или файл)
+    if context.user_data.get('awaiting_deposit_amount'):
+        await process_deposit_amount(update, context)
+        return
+    if context.user_data.get('awaiting_deposit_file'):
+        await process_deposit_file(update, context)
+        return
+    # Если есть текст
+    if not update.message.text:
+        # Если это документ/фото/видео, но флаг delivery не установлен — игнорируем
+        return
     text = update.message.text.strip()
+    user_id = update.effective_user.id
     logger.info(f"text_router: user={user_id}, text='{text}', state={context.user_data.get('awaiting_product')}")
 
     if context.user_data.get('awaiting_section_name'):
@@ -1345,22 +1405,6 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.user_data.get('awaiting_custom_qty'):
         await process_custom_qty(update, context)
-        return
-
-    if context.user_data.get('delivery'):
-        await process_delivery(update, context)
-        return
-
-    if context.user_data.get('awaiting_request_text'):
-        await process_request_text(update, context)
-        return
-
-    if context.user_data.get('awaiting_deposit_amount'):
-        await process_deposit_amount(update, context)
-        return
-
-    if context.user_data.get('awaiting_deposit_file'):
-        await process_deposit_file(update, context)
         return
 
     await update.message.reply_text("❓ Неизвестная команда. Используйте /start для навигации.")
@@ -1439,7 +1483,7 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
             return
         logger.info(f"Добавляем товар: name={name}, price={price}, section={section}, data_from={data_from}")
         product_id = await add_product(user_id, name, price, desc, section, quantity, data_from)
-        await update.message.reply_text(f"✅ Товар «{name}» добавлен в раздел «{section}». ID: {product_id}")
+        await update.message.reply_text(f"✅ Товар «{name}» добавлен в раздел «{section}».")
         context.user_data.clear()
         await my_products_button(update, context)
 
@@ -1512,6 +1556,7 @@ async def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("helpadm", helpadm_command))
     application.add_handler(CommandHandler("admhelp", admhelp_command))
+    application.add_handler(CommandHandler("orderinfo", orderinfo_command))
     application.add_handler(CommandHandler("addseller", add_seller_command))
     application.add_handler(CommandHandler("removeseller", remove_seller_command))
     application.add_handler(CommandHandler("setpayment", set_payment_command))
@@ -1557,6 +1602,7 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     application.add_handler(MessageHandler(filters.PHOTO, text_router))
     application.add_handler(MessageHandler(filters.Document.ALL, text_router))
+    application.add_handler(MessageHandler(filters.VIDEO, text_router))
 
     await application.initialize()
     await application.bot.delete_webhook(drop_pending_updates=True)
