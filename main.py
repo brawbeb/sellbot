@@ -442,11 +442,18 @@ async def request_data_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Введите запрос (вопрос) для покупателя @{buyer_name}:")
 
 # ================== УПРАВЛЕНИЕ ТОВАРАМИ ==================
-async def show_my_products(query, user_id, context=None):
-    """Отображает список товаров продавца через редактирование сообщения."""
+async def show_my_products(query, user_id, context=None, update=None):
+    """Отображает список товаров продавца через редактирование сообщения (если есть query), иначе отправляет новое."""
     if not await is_seller(user_id):
-        await query.answer("❌ Вы не продавец.", show_alert=True)
+        if query:
+            await query.answer("❌ Вы не продавец.", show_alert=True)
+        else:
+            if update and update.message:
+                await update.message.reply_text("❌ Вы не продавец.")
+            elif context:
+                await context.bot.send_message(user_id, "❌ Вы не продавец.")
         return
+
     products = await get_seller_products(user_id)
     if not products:
         text = "У вас пока нет товаров. Добавьте товар через кнопку ниже."
@@ -455,17 +462,26 @@ async def show_my_products(query, user_id, context=None):
             [InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")],
             [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
         ]
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-    text = "🏷 **Ваши товары:**\n\n"
-    keyboard = []
-    for p in products:
-        text += f"• {p['name']} | {p['price']} RUB | в наличии: {p.get('quantity', '∞')}\n"
-        keyboard.append([InlineKeyboardButton(f"✏️ {p['name']}", callback_data=f"edit_prod_{p['id']}")])
-    keyboard.append([InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")])
-    keyboard.append([InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        text = "🏷 **Ваши товары:**\n\n"
+        keyboard = []
+        for p in products:
+            text += f"• {p['name']} | {p['price']} RUB | в наличии: {p.get('quantity', '∞')}\n"
+            keyboard.append([InlineKeyboardButton(f"✏️ {p['name']}", callback_data=f"edit_prod_{p['id']}")])
+        keyboard.append([InlineKeyboardButton("📂 Управление разделом", callback_data="manage_sections")])
+        keyboard.append([InlineKeyboardButton("➕ Добавить товар", callback_data="add_product")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if query:
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+    elif update and update.message:
+        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+    elif context:
+        await context.bot.send_message(user_id, text, parse_mode='Markdown', reply_markup=reply_markup)
+    else:
+        logger.warning("show_my_products вызвана без query, update и context")
 
 async def my_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1511,7 +1527,7 @@ async def process_section_name(update: Update, context: ContextTypes.DEFAULT_TYP
     await set_seller_section(user_id, section_name)
     await update.message.reply_text(f"✅ Раздел «{section_name}» создан.")
     context.user_data.pop('awaiting_section_name', None)
-    await show_my_products(None, user_id, context)
+    await show_my_products(None, user_id, context, update=update)
 
 async def process_rename_section(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1527,7 +1543,7 @@ async def process_rename_section(update: Update, context: ContextTypes.DEFAULT_T
     await rename_seller_section(user_id, new_name)
     await update.message.reply_text(f"✅ Раздел переименован из «{old_section}» в «{new_name}».")
     context.user_data.pop('awaiting_rename_section', None)
-    await show_my_products(None, user_id, context)
+    await show_my_products(None, user_id, context, update=update)
 
 async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1573,7 +1589,7 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
         product_id = await add_product(user_id, name, price, desc, section, quantity, data_from)
         await update.message.reply_text(f"✅ Товар «{name}» добавлен в раздел «{section}».")
         context.user_data.clear()
-        await show_my_products(None, user_id, context)
+        await show_my_products(None, user_id, context, update=update)
     else:
         await update.message.reply_text("❓ Неизвестная команда. Начните заново через /start.")
 
