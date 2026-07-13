@@ -621,6 +621,7 @@ async def edit_product_callback(update: Update, context: ContextTypes.DEFAULT_TY
     ])
     await query.edit_message_text(f"Редактирование товара **{product['name']}**", parse_mode='Markdown', reply_markup=keyboard)
 
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ edit_field_callback
 async def edit_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -628,15 +629,8 @@ async def edit_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     field = query.data.split("_")[2]
     context.user_data['edit_field'] = field
-    if field == 'name':
-        await query.edit_message_text("Введите новое название:")
-    elif field == 'price':
-        await query.edit_message_text("Введите новую цену (число):")
-    elif field == 'quantity':
-        await query.edit_message_text("Введите новое количество (например, «1 шт.», «3 шт.», «∞»):")
-    elif field == 'desc':
-        await query.edit_message_text("Введите новое описание:")
-    elif field == 'data_from':
+
+    if field == 'data_from':
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Покупатель должен предоставить данные", callback_data="edit_data_from_buyer")],
             [InlineKeyboardButton("Продавец должен предоставить данные", callback_data="edit_data_from_seller")],
@@ -644,7 +638,18 @@ async def edit_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         ])
         await query.edit_message_text("Выберите, кто должен предоставить дополнительные данные:", reply_markup=keyboard)
     else:
+        # Устанавливаем состояние ожидания ввода нового значения
         context.user_data['awaiting_edit_value'] = True
+        if field == 'name':
+            await query.edit_message_text("Введите новое название:")
+        elif field == 'price':
+            await query.edit_message_text("Введите новую цену (число):")
+        elif field == 'quantity':
+            await query.edit_message_text("Введите новое количество (например, «1 шт.», «3 шт.», «∞»):")
+        elif field == 'desc':
+            await query.edit_message_text("Введите новое описание:")
+        else:
+            await query.edit_message_text("Введите новое значение:")
 
 async def edit_data_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
