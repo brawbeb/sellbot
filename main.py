@@ -323,7 +323,7 @@ async def helpadm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Нет прав.")
         return
     text = (
-        "👑 **Команды для создателей**\n\n"
+        "👑 Команды для создателей\n\n"
         "/addseller <ID> – добавить продавца\n"
         "/removeseller <ID> – удалить продавца\n"
         "/setpayment <номер карты> – установить реквизиты для оплаты\n"
@@ -332,7 +332,7 @@ async def helpadm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/clear_all – полностью очистить все данные (товары, разделы, балансы, статистику)\n"
         "/helpadm – эта справка"
     )
-    await update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(text)  # parse_mode убран, чтобы избежать ошибок с подчёркиваниями
 
 async def admhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await helpadm_command(update, context)
@@ -790,7 +790,7 @@ async def seller_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode='Markdown'
     )
 
-# ================== КАТАЛОГ (исправлен) ==================
+# ================== КАТАЛОГ ==================
 async def catalog_button(update: Update, context: ContextTypes.DEFAULT_TYPE, query=None):
     """Показывает категории, может быть вызвана как из сообщения, так и из callback."""
     products = await get_all_products()
@@ -1581,7 +1581,6 @@ async def back_to_catalog_callback(update: Update, context: ContextTypes.DEFAULT
     if not query:
         return
     await query.answer()
-    # используем catalog_button с параметром query
     await catalog_button(update, context, query=query)
 
 async def back_to_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
