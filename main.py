@@ -773,7 +773,6 @@ async def category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = query.data.split("_")
     seller_id = int(parts[1])
     section = '_'.join(parts[2:])
-    # сохраняем для кнопки "Назад" в карточке товара
     context.user_data['last_category'] = (seller_id, section)
     products = await get_products_by_section(seller_id, section)
     if not products:
@@ -843,7 +842,7 @@ async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
 
-# ================== ПОПОЛНЕНИЕ БАЛАНСА ==================
+# ================== ПОПОЛНЕНИЕ БАЛАНСА (без чека) ==================
 async def deposit_balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -858,7 +857,7 @@ async def deposit_balance_callback(update: Update, context: ContextTypes.DEFAULT
         f"💳 **Пополнение баланса**\n\n"
         f"1️⃣ Переведите сумму на следующие реквизиты:\n{payment_details}\n\n"
         f"2️⃣ Напишите в ответ на это сообщение **сумму** (только число), которую вы перевели.\n\n"
-        f"3️⃣ После этого отправьте **файл с чеком** (скриншот, фото)."
+        f"После ввода суммы вы получите кнопку для подтверждения оплаты."
     )
     await query.edit_message_text(text, parse_mode='Markdown')
 
@@ -874,56 +873,86 @@ async def process_deposit_amount(update: Update, context: ContextTypes.DEFAULT_T
         return
     user_id = update.effective_user.id
     context.user_data['deposit_amount'] = amount
-    context.user_data['awaiting_deposit_file'] = True
-    await update.message.reply_text(
-        f"✅ Сумма {amount} RUB сохранена. Теперь отправьте **файл с чеком** (скриншот, фото)."
-    )
-
-async def process_deposit_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('awaiting_deposit_file'):
-        return
-    user_id = update.effective_user.id
-    amount = context.user_data.get('deposit_amount')
-    if not amount:
-        await update.message.reply_text("❌ Ошибка: сумма не найдена. Начните пополнение заново.")
-        context.user_data.clear()
-        return
-    # Проверяем, что прислали именно файл или фото
-    if not (update.message.document or update.message.photo):
-        await update.message.reply_text("❌ Пожалуйста, отправьте файл (скриншот, фото чека).")
-        return
+    # Создаём заказ на пополнение
     order_id = await create_order(user_id, None, 1, amount, payment_method="deposit")
-    file_id = None
-    if update.message.document:
-        file_id = update.message.document.file_id
-    elif update.message.photo:
-        file_id = update.message.photo[-1].file_id
+    context.user_data['deposit_order_id'] = order_id
+    payment_card = await get_payment_details()
+    text = (
+        f"✅ Сумма {amount} RUB сохранена.\n\n"
+        f"Переведите {amount} RUB на карту:\n`{payment_card}`\n\n"
+        f"После перевода нажмите кнопку «Я оплатил»."
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Я оплатил", callback_data=f"deposit_paid_{order_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_deposit_{order_id}")]
+    ])
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
+    context.user_data.pop('awaiting_deposit_amount', None)
+
+async def deposit_paid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    order_id = int(query.data.split("_")[2])
     order = await get_order(order_id)
-    order['file_id'] = file_id
-    await redis_client.set(f"order:{order_id}", json.dumps(order))
+    if not order:
+        await query.edit_message_text("❌ Заказ не найден.")
+        return
+    if order['status'] != 'pending':
+        await query.edit_message_text("❌ Этот заказ уже обработан.")
+        return
+    user_id = query.from_user.id
+    if order['user_id'] != user_id:
+        await query.answer("⛔ Это не ваш заказ.", show_alert=True)
+        return
+    # Проверяем, не истекло ли время
+    expires = datetime.fromisoformat(order['expires'])
+    if datetime.now() > expires:
+        await query.edit_message_text("⏰ Время на оплату истекло. Заказ отменён.")
+        await update_order(order_id, status='rejected')
+        return
+    # Отправляем уведомление админам
+    buyer_name = await get_user_name(user_id)
     for owner_id in OWNER_IDS:
         try:
             await context.bot.send_message(
                 owner_id,
-                f"📩 Новый запрос на пополнение баланса!\n"
-                f"Пользователь: @{await get_user_name(user_id)} (ID: {user_id})\n"
-                f"Сумма: {amount} RUB\n"
-                f"Заказ ID: {order_id}\n"
-                f"Чек приложен ниже.",
+                f"💳 Покупатель @{buyer_name} (ID: {user_id}) сообщает об оплате пополнения баланса на сумму {order['total_price']} RUB.\n"
+                f"Заказ #{order_id}.\n\n"
+                f"Подтвердите пополнение:",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve_deposit_{order_id}")],
                     [InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_deposit_{order_id}")]
                 ])
             )
-            if file_id:
-                await context.bot.send_document(owner_id, file_id)
-        except Exception as e:
-            logger.error(f"Ошибка отправки админу: {e}")
-    await update.message.reply_text(
-        f"✅ Ваш чек на сумму {amount} RUB отправлен на проверку. Ожидайте подтверждения администратора."
+        except:
+            pass
+    await query.edit_message_text(
+        "✅ Ваше уведомление об оплате отправлено администратору. Ожидайте подтверждения."
     )
-    context.user_data.clear()
+    await update_order(order_id, status='paid')
 
+async def cancel_deposit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    order_id = int(query.data.split("_")[2])
+    order = await get_order(order_id)
+    if not order:
+        await query.edit_message_text("❌ Заказ не найден.")
+        return
+    if order['user_id'] != query.from_user.id:
+        await query.answer("⛔ Это не ваш заказ.", show_alert=True)
+        return
+    if order['status'] != 'pending':
+        await query.edit_message_text("❌ Этот заказ уже не может быть отменён.")
+        return
+    await update_order(order_id, status='cancelled')
+    await query.edit_message_text("❌ Пополнение отменено.")
+
+# ================== ОБРАБОТКА ПОДТВЕРЖДЕНИЯ ПОПОЛНЕНИЯ (админ) ==================
 async def approve_deposit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -934,7 +963,7 @@ async def approve_deposit_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     order_id = int(query.data.split("_")[2])
     order = await get_order(order_id)
-    if not order or order['status'] != 'pending':
+    if not order or order['status'] not in ('pending', 'paid'):
         await query.edit_message_text("❌ Заказ не найден или уже обработан.")
         return
     await update_order(order_id, status='approved')
@@ -961,7 +990,7 @@ async def reject_deposit_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     order_id = int(query.data.split("_")[2])
     order = await get_order(order_id)
-    if not order or order['status'] != 'pending':
+    if not order or order['status'] not in ('pending', 'paid'):
         await query.edit_message_text("❌ Заказ не найден или уже обработан.")
         return
     await update_order(order_id, status='rejected')
@@ -977,7 +1006,6 @@ async def reject_deposit_callback(update: Update, context: ContextTypes.DEFAULT_
 
 # ================== КАРТОЧКА ТОВАРА И ПОКУПКА ==================
 async def show_product_detail(query, product_id, user_id=None):
-    """Отображает карточку товара с выбором количества."""
     product = await get_product(product_id)
     if not product:
         await query.edit_message_text("❌ Товар не найден.")
@@ -1003,7 +1031,6 @@ async def show_product_detail(query, product_id, user_id=None):
     try:
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=keyboard)
     except Exception as e:
-        # если сообщение не изменилось, просто игнорируем
         if "Message is not modified" in str(e):
             await query.answer()
         else:
@@ -1024,7 +1051,6 @@ async def product_detail_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("❌ Ошибка: неверный ID товара.")
         return
     context.user_data['buy_product_id'] = product_id
-    # сохраняем текущий продукт для кнопки "Назад" (вернуться в категорию)
     context.user_data['current_product_id'] = product_id
     await show_product_detail(query, product_id, query.from_user.id)
 
@@ -1060,19 +1086,14 @@ async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if balance >= total_price:
         await deduct_balance(user_id, total_price)
         await add_transaction(user_id, "purchase", -total_price, f"Покупка {qty} шт. товара «{product['name']}»")
-        # обновляем количество
         if new_qty is not None:
             await update_product(product_id, quantity=str(new_qty))
-        else:
-            # если бесконечность, оставляем как есть
-            pass
         seller_id = product['seller_id']
         buyer_name = await get_user_name(user_id)
         await context.bot.send_message(
             seller_id,
             f"💰 Продажа: Покупатель @{buyer_name} (ID: {user_id}) купил {qty} шт. товара «{product['name']}» на сумму {total_price} RUB."
         )
-        # обновляем статистику продавца
         await redis_client.incr(f"stats:seller:{seller_id}:sales", qty)
         await redis_client.incrbyfloat(f"stats:seller:{seller_id}:total_amount", total_price)
         await redis_client.incr(f"stats:user:{user_id}:purchases", qty)
@@ -1098,9 +1119,11 @@ async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Пожалуйста, ответьте на это сообщение, отправив нужные данные (ссылку на профиль, скриншот и т.д.)."
             )
             await set_request(seller_id, user_id)
+            # убираем лишнее сообщение продавцу с командой /request, так как автоматическая пересылка уже настроена
+            # просто отправляем продавцу короткое уведомление, что покупатель оплатил
             await context.bot.send_message(
                 seller_id,
-                f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Он получил запрос на предоставление данных. Ожидайте его ответа в личных сообщениях."
+                f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Он получил запрос на предоставление данных и ответит вам в личные сообщения."
             )
     else:
         order_id = await create_order(user_id, product_id, qty, total_price, payment_method="card")
@@ -1189,7 +1212,7 @@ async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await set_request(seller_id, user_id)
             await context.bot.send_message(
                 seller_id,
-                f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Он получил запрос на предоставление данных. Ожидайте его ответа в личных сообщениях."
+                f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Он получил запрос на предоставление данных и ответит вам в личные сообщения."
             )
     else:
         order_id = await create_order(user_id, product_id, qty, total_price, payment_method="card")
@@ -1233,7 +1256,6 @@ async def pay_confirmed_callback(update: Update, context: ContextTypes.DEFAULT_T
     if datetime.now() > expires:
         await query.edit_message_text("⏰ Время на оплату истекло. Заказ отменён.")
         await update_order(order_id, status='rejected')
-        # возвращаем количество
         product = await get_product(order['product_id'])
         if product:
             qty_str = product.get('quantity')
@@ -1317,7 +1339,7 @@ async def confirm_pay_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             seller_id = product['seller_id']
             await context.bot.send_message(
                 seller_id,
-                f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Используйте команду /request {user_id} для запроса дополнительных данных."
+                f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Он получит запрос на предоставление данных и ответит вам в личные сообщения."
             )
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомлений: {e}")
@@ -1372,7 +1394,6 @@ async def cancel_order_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if order['status'] != 'pending':
         await query.edit_message_text("❌ Этот заказ уже не может быть отменён.")
         return
-    # возвращаем количество товара
     product = await get_product(order['product_id'])
     if product:
         qty_str = product.get('quantity')
@@ -1499,12 +1520,10 @@ async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await send_main_keyboard(update, "Главное меню")
 
 async def back_to_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Возврат из карточки товара в категорию."""
     query = update.callback_query
     if not query:
         return
     await query.answer()
-    # получаем сохранённую категорию
     last_cat = context.user_data.get('last_category')
     if last_cat:
         seller_id, section = last_cat
@@ -1526,7 +1545,6 @@ async def back_to_product_callback(update: Update, context: ContextTypes.DEFAULT
         keyboard.append([InlineKeyboardButton("🔙 К категориям", callback_data="back_to_catalog")])
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        # если нет сохранённой категории, возвращаем в каталог
         await catalog_button(update, context)
 
 async def back_to_catalog_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1548,9 +1566,6 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if context.user_data.get('awaiting_deposit_amount'):
         await process_deposit_amount(update, context)
-        return
-    if context.user_data.get('awaiting_deposit_file'):
-        await process_deposit_file(update, context)
         return
     if update.message.text:
         text = update.message.text.strip()
@@ -1752,6 +1767,8 @@ async def main():
     application.add_handler(CallbackQueryHandler(cancel_order_callback, pattern="^cancel_order_"))
     application.add_handler(CallbackQueryHandler(deliver_callback, pattern="^deliver_"))
     application.add_handler(CallbackQueryHandler(deposit_balance_callback, pattern="^deposit_balance$"))
+    application.add_handler(CallbackQueryHandler(deposit_paid_callback, pattern="^deposit_paid_"))
+    application.add_handler(CallbackQueryHandler(cancel_deposit_callback, pattern="^cancel_deposit_"))
     application.add_handler(CallbackQueryHandler(approve_deposit_callback, pattern="^approve_deposit_"))
     application.add_handler(CallbackQueryHandler(reject_deposit_callback, pattern="^reject_deposit_"))
     application.add_handler(CallbackQueryHandler(back_to_product_callback, pattern="^back_to_product_"))
