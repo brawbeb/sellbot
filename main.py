@@ -5,7 +5,6 @@ import asyncio
 import sys
 from datetime import datetime, timedelta
 from aiohttp import web
-import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
@@ -35,7 +34,7 @@ HELP_TEXT = """
 """
 
 
-# ================== REDIS (обязательное подключение) ==================
+# ================== REDIS ==================
 async def init_redis():
     global redis_client
     for attempt in range(5):
@@ -1865,17 +1864,8 @@ async def health(request):
     return web.Response(text="OK")
 
 
-# ================== ПОДДЕРЖАНИЕ АКТИВНОСТИ ==================
-async def keep_alive():
-    while True:
-        await asyncio.sleep(300)
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"http://localhost:{os.environ.get('PORT', 10000)}/health"
-                async with session.get(url) as resp:
-                    await resp.read()
-        except Exception as e:
-            print(f"❌ Ошибка в keep_alive: {e}")
+async def index(request):
+    return web.Response(text="Bot is running")
 
 
 # ================== ГЛАВНАЯ ФУНКЦИЯ ==================
@@ -1883,8 +1873,9 @@ async def main():
     global bot_app
     logger.info("Запуск бота...")
 
-    # ====== 1. Сначала запускаем веб-сервер ======
+    # ====== 1. Запускаем веб-сервер ======
     web_app = web.Application()
+    web_app.router.add_get('/', index)  # <-- добавлен корневой маршрут
     web_app.router.add_get('/health', health)
     runner = web.AppRunner(web_app)
     await runner.setup()
@@ -1895,9 +1886,9 @@ async def main():
         logger.info(f"✅ Веб-сервер запущен на порту {port}")
     except Exception as e:
         logger.error(f"❌ Ошибка запуска веб-сервера: {e}")
-        sys.exit(1)  # если веб-сервер не стартанул – смысла продолжать нет
+        sys.exit(1)
 
-    # ====== 2. Затем подключаем Redis (обязательно) ======
+    # ====== 2. Подключаем Redis (обязательно) ======
     try:
         if REDIS_URL:
             await init_redis()
@@ -1906,14 +1897,13 @@ async def main():
             sys.exit(1)
     except Exception as e:
         logger.error(f"❌ Не удалось подключиться к Redis: {e}")
-        # Процесс завершится, но веб-сервер уже запущен и успеет ответить на запросы
         sys.exit(1)
 
-    # ====== 3. Если Redis подключился – запускаем бота ======
+    # ====== 3. Запускаем бота ======
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     bot_app = application
 
-    # Регистрация обработчиков
+    # Регистрация обработчиков (полный список, как выше)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("helpadm", helpadm_command))
@@ -1976,9 +1966,7 @@ async def main():
     await application.updater.start_polling()
     logger.info("✅ Бот запущен и получает обновления")
 
-    # Фоновая задача для keep_alive
-    asyncio.create_task(keep_alive())
-
+    # Бесконечный цикл поддержания работы
     try:
         while True:
             await asyncio.sleep(3600)
