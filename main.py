@@ -700,17 +700,22 @@ async def cancel_add_product_callback(update: Update, context: ContextTypes.DEFA
     await show_my_products(query, query.from_user.id, context)
 
 
-# ================== РЕДАКТИРОВАНИЕ ТОВАРА ==================
+# ================== РЕДАКТИРОВАНИЕ ТОВАРА (исправлено) ==================
 async def edit_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         return
     await query.answer()
-    product_id = int(query.data.split("_")[2])
+    try:
+        product_id = int(query.data.split("_")[2])
+    except (IndexError, ValueError):
+        await query.edit_message_text("❌ Ошибка: неверный идентификатор товара.")
+        return
     product = await get_product(product_id)
     if not product or product['seller_id'] != query.from_user.id:
         await query.edit_message_text("❌ Товар не найден или не принадлежит вам.")
         return
+    # СОХРАНЯЕМ ID для использования в отмене
     context.user_data['edit_product_id'] = product_id
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✏️ Название", callback_data="edit_field_name")],
@@ -834,11 +839,30 @@ async def back_to_my_products_callback(update: Update, context: ContextTypes.DEF
 
 
 async def cancel_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Возврат в меню редактирования без потери ID (кнопка 'Отмена' внутри выбора data_from)."""
     query = update.callback_query
     if not query:
         return
     await query.answer()
-    await edit_product_callback(update, context)
+    product_id = context.user_data.get('edit_product_id')
+    if not product_id:
+        await query.edit_message_text("❌ Товар не найден.")
+        return
+    product = await get_product(product_id)
+    if not product:
+        await query.edit_message_text("❌ Товар не найден.")
+        return
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Название", callback_data="edit_field_name")],
+        [InlineKeyboardButton("💰 Цена", callback_data="edit_field_price")],
+        [InlineKeyboardButton("📦 Количество", callback_data="edit_field_quantity")],
+        [InlineKeyboardButton("📝 Описание", callback_data="edit_field_desc")],
+        [InlineKeyboardButton("👥 Кто предоставляет данные", callback_data="edit_field_data_from")],
+        [InlineKeyboardButton("❌ Удалить товар", callback_data="delete_product")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_my_products")]
+    ])
+    await query.edit_message_text(f"Редактирование товара **{product['name']}**", parse_mode='Markdown',
+                                  reply_markup=keyboard)
 
 
 # ================== СТАТИСТИКА ПРОДАВЦА ==================
@@ -1875,7 +1899,7 @@ async def main():
 
     # ====== 1. Запускаем веб-сервер ======
     web_app = web.Application()
-    web_app.router.add_get('/', index)  # <-- добавлен корневой маршрут
+    web_app.router.add_get('/', index)
     web_app.router.add_get('/health', health)
     runner = web.AppRunner(web_app)
     await runner.setup()
@@ -1903,7 +1927,7 @@ async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     bot_app = application
 
-    # Регистрация обработчиков (полный список, как выше)
+    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("helpadm", helpadm_command))
