@@ -60,7 +60,7 @@ async def init_redis():
             if attempt < 4:
                 await asyncio.sleep(3)
             else:
-                raise  # если не удалось после 5 попыток – выбрасываем исключение
+                raise
 
 
 # ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
@@ -313,6 +313,40 @@ async def update_order(order_id, **fields):
     return True
 
 
+# ================== ВЫВОД СРЕДСТВ (НОВЫЙ ФУНКЦИОНАЛ) ==================
+async def create_withdraw_request(user_id, card_number, amount):
+    """Создаёт заявку на вывод средств."""
+    request_id = await redis_client.incr("global:withdraw_id")
+    commission = amount * 0.15
+    amount_with_commission = amount - commission
+    request_data = {
+        "id": request_id,
+        "user_id": user_id,
+        "card_number": card_number,
+        "amount": amount,
+        "commission": commission,
+        "amount_with_commission": amount_with_commission,
+        "status": "pending",
+        "created": datetime.now().isoformat()
+    }
+    await redis_client.set(f"withdraw:{request_id}", json.dumps(request_data))
+    return request_id
+
+
+async def get_withdraw_request(request_id):
+    data = await redis_client.get(f"withdraw:{request_id}")
+    return json.loads(data) if data else None
+
+
+async def update_withdraw_request(request_id, **fields):
+    req = await get_withdraw_request(request_id)
+    if not req:
+        return False
+    req.update(fields)
+    await redis_client.set(f"withdraw:{request_id}", json.dumps(req))
+    return True
+
+
 # ================== ВСПОМОГАТЕЛЬНЫЕ ДЛЯ БОТА ==================
 async def get_user_name(user_id):
     try:
@@ -330,7 +364,8 @@ async def send_main_keyboard(update: Update, text: str):
         keyboard = [
             [KeyboardButton("📂 Все категории"), KeyboardButton("🛒 Наличие товаров")],
             [KeyboardButton("👑 Управление товарами"), KeyboardButton("📊 Статистика продаж")],
-            [KeyboardButton("ℹ️ О магазине"), KeyboardButton("👤 Профиль"), KeyboardButton("🆘 Помощь")]
+            [KeyboardButton("💳 Вывод средств"), KeyboardButton("ℹ️ О магазине"), KeyboardButton("👤 Профиль"),
+             KeyboardButton("🆘 Помощь")]
         ]
     else:
         keyboard = [
@@ -527,12 +562,17 @@ async def clear_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await redis_client.delete("global:product_id")
     await redis_client.delete("global:order_id")
     await redis_client.delete("global:trans_id")
+    await redis_client.delete("global:withdraw_id")
     # Удаляем запросы (request:*)
     keys = await redis_client.keys("request:*")
     if keys:
         await redis_client.delete(*keys)
+    # Удаляем заявки на вывод
+    keys = await redis_client.keys("withdraw:*")
+    if keys:
+        await redis_client.delete(*keys)
     await update.message.reply_text(
-        "✅ Все данные (товары, разделы, балансы, статистика, заказы, транзакции) полностью очищены.")
+        "✅ Все данные (товары, разделы, балансы, статистика, заказы, транзакции, заявки) полностью очищены.")
 
 
 # ================== УПРАВЛЕНИЕ ТОВАРАМИ ==================
@@ -700,7 +740,7 @@ async def cancel_add_product_callback(update: Update, context: ContextTypes.DEFA
     await show_my_products(query, query.from_user.id, context)
 
 
-# ================== РЕДАКТИРОВАНИЕ ТОВАРА (исправлено) ==================
+# ================== РЕДАКТИРОВАНИЕ ТОВАРА ==================
 async def edit_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -715,7 +755,6 @@ async def edit_product_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if not product or product['seller_id'] != query.from_user.id:
         await query.edit_message_text("❌ Товар не найден или не принадлежит вам.")
         return
-    # СОХРАНЯЕМ ID для использования в отмене
     context.user_data['edit_product_id'] = product_id
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✏️ Название", callback_data="edit_field_name")],
@@ -839,7 +878,6 @@ async def back_to_my_products_callback(update: Update, context: ContextTypes.DEF
 
 
 async def cancel_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Возврат в меню редактирования без потери ID (кнопка 'Отмена' внутри выбора data_from)."""
     query = update.callback_query
     if not query:
         return
@@ -879,6 +917,206 @@ async def seller_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"Общая сумма продаж: {total_amount:.2f} RUB",
         parse_mode='Markdown'
     )
+
+
+# ================== ВЫВОД СРЕДСТВ (ОБРАБОТЧИКИ) ==================
+async def withdraw_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not await is_seller(user_id):
+        await update.message.reply_text("❌ Вы не продавец.")
+        return
+    context.user_data['withdraw_step'] = 'card'
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel_withdraw")]])
+    await update.message.reply_text(
+        "💳 Введите номер карты для вывода средств (только цифры):",
+        reply_markup=keyboard
+    )
+
+
+async def cancel_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    context.user_data.pop('withdraw_step', None)
+    context.user_data.pop('withdraw_card', None)
+    context.user_data.pop('withdraw_amount', None)
+    await query.edit_message_text("❌ Операция вывода отменена.")
+    await send_main_keyboard(update, "Главное меню")
+
+
+async def process_withdraw_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get('withdraw_step') != 'card':
+        return
+    card = update.message.text.replace(" ", "").strip()
+    if not card.isdigit() or len(card) < 10:
+        await update.message.reply_text("❌ Неверный номер карты. Введите только цифры (минимум 10 символов).")
+        return
+    context.user_data['withdraw_card'] = card
+    context.user_data['withdraw_step'] = 'amount'
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel_withdraw")]])
+    await update.message.reply_text(
+        "💰 Введите сумму для вывода (в RUB):\n"
+        f"Ваш баланс: {await get_balance(update.effective_user.id):.2f} RUB",
+        reply_markup=keyboard
+    )
+
+
+async def process_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get('withdraw_step') != 'amount':
+        return
+    try:
+        amount = float(update.message.text.replace(',', '.'))
+        if amount <= 0:
+            raise ValueError
+    except:
+        await update.message.reply_text("❌ Введите корректную положительную сумму.")
+        return
+    user_id = update.effective_user.id
+    balance = await get_balance(user_id)
+    if amount > balance:
+        await update.message.reply_text(f"❌ Недостаточно средств. Ваш баланс: {balance:.2f} RUB.")
+        return
+    # Сохраняем сумму
+    context.user_data['withdraw_amount'] = amount
+    commission = amount * 0.15
+    amount_with_commission = amount - commission
+    context.user_data['withdraw_commission'] = commission
+    context.user_data['withdraw_amount_with_commission'] = amount_with_commission
+    # Показываем подтверждение
+    card_masked = context.user_data['withdraw_card'][-4:].rjust(len(context.user_data['withdraw_card']), '*')
+    text = (
+        f"📝 **Подтверждение вывода**\n\n"
+        f"Сумма: {amount:.2f} RUB\n"
+        f"Комиссия 15%: {commission:.2f} RUB\n"
+        f"К получению: **{amount_with_commission:.2f} RUB**\n"
+        f"Карта: {card_masked}\n\n"
+        f"Подтвердить вывод?"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_withdraw")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_withdraw")]
+    ])
+    context.user_data['withdraw_step'] = 'confirm'
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
+
+
+async def confirm_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    user_id = query.from_user.id
+    if context.user_data.get('withdraw_step') != 'confirm':
+        await query.edit_message_text("❌ Ошибка: начните вывод заново.")
+        return
+    card = context.user_data.get('withdraw_card')
+    amount = context.user_data.get('withdraw_amount')
+    commission = context.user_data.get('withdraw_commission')
+    amount_with_commission = context.user_data.get('withdraw_amount_with_commission')
+    if not all([card, amount, commission, amount_with_commission]):
+        await query.edit_message_text("❌ Ошибка: данные не найдены. Начните заново.")
+        context.user_data.pop('withdraw_step', None)
+        return
+    # Создаём заявку
+    request_id = await create_withdraw_request(user_id, card, amount)
+    # Уведомляем админов
+    buyer_name = await get_user_name(user_id)
+    card_masked = card[-4:].rjust(len(card), '*')
+    for owner_id in OWNER_IDS:
+        try:
+            await context.bot.send_message(
+                owner_id,
+                f"💰 **Новая заявка на вывод средств**\n\n"
+                f"Продавец: @{buyer_name} (ID: {user_id})\n"
+                f"Сумма: {amount:.2f} RUB\n"
+                f"Комиссия 15%: {commission:.2f} RUB\n"
+                f"К выдаче: {amount_with_commission:.2f} RUB\n"
+                f"Карта: {card_masked}\n"
+                f"Заявка №{request_id}\n\n"
+                f"Подтвердите или отклоните заявку:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve_withdraw_{request_id}")],
+                    [InlineKeyboardButton("❌ Отказать", callback_data=f"reject_withdraw_{request_id}")]
+                ])
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки админу: {e}")
+    await query.edit_message_text(
+        f"✅ Заявка на вывод {amount:.2f} RUB отправлена администраторам.\n"
+        f"Ожидайте подтверждения."
+    )
+    context.user_data.pop('withdraw_step', None)
+    context.user_data.pop('withdraw_card', None)
+    context.user_data.pop('withdraw_amount', None)
+    context.user_data.pop('withdraw_commission', None)
+    context.user_data.pop('withdraw_amount_with_commission', None)
+
+
+async def approve_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    if not await is_owner(query.from_user.id):
+        await query.answer("⛔ Нет прав.", show_alert=True)
+        return
+    await query.answer()
+    request_id = int(query.data.split("_")[2])
+    req = await get_withdraw_request(request_id)
+    if not req or req['status'] != 'pending':
+        await query.edit_message_text("❌ Заявка не найдена или уже обработана.")
+        return
+    user_id = req['user_id']
+    amount = req['amount']
+    card = req['card_number']
+    # Списываем полную сумму с баланса
+    if not await deduct_balance(user_id, amount):
+        await query.edit_message_text("❌ Недостаточно средств на балансе пользователя для списания.")
+        return
+    # Добавляем транзакцию
+    await add_transaction(
+        user_id,
+        "withdraw",
+        -amount,
+        f"Вывод средств на карту {card[-4:].rjust(len(card), '*')} (комиссия {req['commission']:.2f} RUB)"
+    )
+    await update_withdraw_request(request_id, status='approved')
+    await query.edit_message_text(f"✅ Заявка №{request_id} подтверждена. Средства списаны с баланса продавца.")
+    # Уведомляем продавца
+    try:
+        await context.bot.send_message(
+            user_id,
+            f"✅ Ваш вывод {amount:.2f} RUB на карту {card[-4:].rjust(len(card), '*')} подтверждён администратором.\n"
+            f"Сумма к получению (с учётом комиссии): {req['amount_with_commission']:.2f} RUB."
+        )
+    except:
+        pass
+
+
+async def reject_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    if not await is_owner(query.from_user.id):
+        await query.answer("⛔ Нет прав.", show_alert=True)
+        return
+    await query.answer()
+    request_id = int(query.data.split("_")[2])
+    req = await get_withdraw_request(request_id)
+    if not req or req['status'] != 'pending':
+        await query.edit_message_text("❌ Заявка не найдена или уже обработана.")
+        return
+    await update_withdraw_request(request_id, status='rejected')
+    await query.edit_message_text(f"❌ Заявка №{request_id} отклонена.")
+    # Уведомляем продавца
+    try:
+        await context.bot.send_message(
+            req['user_id'],
+            f"❌ Ваш вывод {req['amount']:.2f} RUB отклонён администратором."
+        )
+    except:
+        pass
 
 
 # ================== КАТАЛОГ ==================
@@ -1747,6 +1985,14 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('awaiting_deposit_amount'):
         await process_deposit_amount(update, context)
         return
+    # Обработка ввода для вывода средств
+    if context.user_data.get('withdraw_step') == 'card':
+        await process_withdraw_card(update, context)
+        return
+    if context.user_data.get('withdraw_step') == 'amount':
+        await process_withdraw_amount(update, context)
+        return
+
     if update.message.text:
         text = update.message.text.strip()
         user_id = update.effective_user.id
@@ -1940,6 +2186,7 @@ async def main():
     application.add_handler(CommandHandler("request", request_data_command))
     application.add_handler(CommandHandler("clear_all", clear_all_command))
 
+    # Кнопки главного меню
     application.add_handler(MessageHandler(filters.Text("📂 Все категории"), catalog_button))
     application.add_handler(MessageHandler(filters.Text("🛒 Наличие товаров"), all_products_button))
     application.add_handler(MessageHandler(filters.Text("ℹ️ О магазине"), about_button))
@@ -1947,7 +2194,10 @@ async def main():
     application.add_handler(MessageHandler(filters.Text("🆘 Помощь"), help_command))
     application.add_handler(MessageHandler(filters.Text("👑 Управление товарами"), my_products_button))
     application.add_handler(MessageHandler(filters.Text("📊 Статистика продаж"), seller_stats_button))
+    # Новая кнопка для вывода средств
+    application.add_handler(MessageHandler(filters.Text("💳 Вывод средств"), withdraw_button))
 
+    # Callback-обработчики
     application.add_handler(CallbackQueryHandler(manage_sections_callback, pattern="^manage_sections$"))
     application.add_handler(CallbackQueryHandler(add_section_callback, pattern="^add_section$"))
     application.add_handler(CallbackQueryHandler(rename_section_callback, pattern="^rename_section$"))
@@ -1977,7 +2227,13 @@ async def main():
     application.add_handler(CallbackQueryHandler(back_to_catalog_callback, pattern="^back_to_catalog$"))
     application.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
     application.add_handler(CallbackQueryHandler(cancel_edit_callback, pattern="^cancel_edit$"))
+    # Вывод средств
+    application.add_handler(CallbackQueryHandler(cancel_withdraw_callback, pattern="^cancel_withdraw$"))
+    application.add_handler(CallbackQueryHandler(confirm_withdraw_callback, pattern="^confirm_withdraw$"))
+    application.add_handler(CallbackQueryHandler(approve_withdraw_callback, pattern="^approve_withdraw_"))
+    application.add_handler(CallbackQueryHandler(reject_withdraw_callback, pattern="^reject_withdraw_"))
 
+    # Универсальный обработчик текста
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     application.add_handler(MessageHandler(filters.PHOTO, text_router))
     application.add_handler(MessageHandler(filters.Document.ALL, text_router))
@@ -1990,7 +2246,6 @@ async def main():
     await application.updater.start_polling()
     logger.info("✅ Бот запущен и получает обновления")
 
-    # Бесконечный цикл поддержания работы
     try:
         while True:
             await asyncio.sleep(3600)
