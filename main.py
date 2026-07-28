@@ -355,7 +355,7 @@ async def get_user_name(user_id):
         return str(user_id)
 
 
-# ================== ГЛАВНАЯ КЛАВИАТУРА (сокращена) ==================
+# ================== ГЛАВНАЯ КЛАВИАТУРА ==================
 async def send_main_keyboard(update: Update, text: str):
     user_id = update.effective_user.id
     seller_status = await is_seller(user_id)
@@ -521,7 +521,7 @@ async def request_data_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Введите запрос (вопрос) для покупателя @{buyer_name}:")
 
 
-# ================== ОЧИСТКА ВСЕХ ДАННЫХ (для создателей) ==================
+# ================== ОЧИСТКА ВСЕХ ДАННЫХ ==================
 async def clear_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner(update.effective_user.id):
         await update.message.reply_text("⛔ Нет прав.")
@@ -889,15 +889,13 @@ async def cancel_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                                   reply_markup=keyboard)
 
 
-# ================== СТАТИСТИКА ПРОДАВЦА (теперь в профиле) ==================
+# ================== СТАТИСТИКА ПРОДАВЦА ==================
 async def seller_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Этот обработчик больше не используется, но оставлен на случай, если кто-то вызовет
     pass
 
 
 # ================== ПРОФИЛЬ (с инлайн-кнопками) ==================
 async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Определяем, откуда вызвано
     if update.callback_query:
         query = update.callback_query
         await query.answer()
@@ -940,7 +938,7 @@ async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
 
 
-# ================== ВЫВОД СРЕДСТВ (ИЗ ПРОФИЛЯ) ==================
+# ================== ВЫВОД СРЕДСТВ ==================
 async def withdraw_balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -969,7 +967,6 @@ async def cancel_withdraw_from_profile_callback(update: Update, context: Context
     context.user_data.pop('withdraw_commission', None)
     context.user_data.pop('withdraw_amount_with_commission', None)
     await query.edit_message_text("❌ Операция вывода отменена.")
-    # Возвращаемся в профиль
     await profile_button(update, context)
 
 
@@ -1010,13 +1007,13 @@ async def process_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_
     amount_with_commission = amount - commission
     context.user_data['withdraw_commission'] = commission
     context.user_data['withdraw_amount_with_commission'] = amount_with_commission
-    card_masked = context.user_data['withdraw_card'][-4:].rjust(len(context.user_data['withdraw_card']), '*')
+    card = context.user_data['withdraw_card']  # полная карта
     text = (
         f"📝 **Подтверждение вывода**\n\n"
         f"Сумма: {amount:.2f} RUB\n"
         f"Комиссия 15%: {commission:.2f} RUB\n"
         f"К получению: **{amount_with_commission:.2f} RUB**\n"
-        f"Карта: {card_masked}\n\n"
+        f"Карта: `{card}`\n\n"
         f"Подтвердить вывод?"
     )
     keyboard = InlineKeyboardMarkup([
@@ -1046,7 +1043,7 @@ async def confirm_withdraw_callback(update: Update, context: ContextTypes.DEFAUL
         return
     request_id = await create_withdraw_request(user_id, card, amount)
     buyer_name = await get_user_name(user_id)
-    card_masked = card[-4:].rjust(len(card), '*')
+    # Отправка владельцам (админам)
     for owner_id in OWNER_IDS:
         try:
             await context.bot.send_message(
@@ -1054,9 +1051,8 @@ async def confirm_withdraw_callback(update: Update, context: ContextTypes.DEFAUL
                 f"💰 **Новая заявка на вывод средств**\n\n"
                 f"Продавец: @{buyer_name} (ID: {user_id})\n"
                 f"Сумма: {amount:.2f} RUB\n"
-                f"Комиссия 15%: {commission:.2f} RUB\n"
                 f"К выдаче: {amount_with_commission:.2f} RUB\n"
-                f"Карта: {card_masked}\n"
+                f"Карта: `{card}`\n"
                 f"Заявка №{request_id}\n\n"
                 f"Подтвердите или отклоните заявку:",
                 parse_mode='Markdown',
@@ -2007,7 +2003,6 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('awaiting_deposit_amount'):
         await process_deposit_amount(update, context)
         return
-    # Обработка шагов вывода средств
     if context.user_data.get('withdraw_step') == 'card':
         await process_withdraw_card(update, context)
         return
