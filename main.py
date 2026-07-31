@@ -1245,7 +1245,7 @@ async def all_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-# ================== ПОПОЛНЕНИЕ БАЛАНСА ==================
+# ================== ПОПОЛНЕНИЕ БАЛАНСА (с минимальной суммой) ==================
 async def deposit_balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -1259,7 +1259,8 @@ async def deposit_balance_callback(update: Update, context: ContextTypes.DEFAULT
     text = (
         f"💳 **Пополнение баланса**\n\n"
         f"1️⃣ Переведите сумму на следующие реквизиты:\n{payment_details}\n\n"
-        f"2️⃣ Напишите в ответ на это сообщение **сумму** (только число), которую вы перевели.\n\n"
+        f"2️⃣ Напишите в ответ на это сообщение **сумму** (только число), которую вы перевели.\n"
+        f"Минимальная сумма пополнения: **30 RUB**.\n\n"
         f"После ввода суммы вы получите кнопку для подтверждения оплаты."
     )
     await query.edit_message_text(text, parse_mode='Markdown')
@@ -1274,6 +1275,10 @@ async def process_deposit_amount(update: Update, context: ContextTypes.DEFAULT_T
             raise ValueError
     except:
         await update.message.reply_text("❌ Введите корректную положительную сумму.")
+        return
+    # МИНИМАЛЬНАЯ СУММА
+    if amount < 30:
+        await update.message.reply_text("❌ Минимальная сумма пополнения - 30 RUB.")
         return
     user_id = update.effective_user.id
     context.user_data['deposit_amount'] = amount
@@ -1315,10 +1320,9 @@ async def deposit_paid_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("⏰ Время на оплату истекло. Заказ отменён.")
         await update_order(order_id, status='rejected')
         return
-    # Запрашиваем чек
     context.user_data['awaiting_deposit_receipt'] = order_id
     await query.edit_message_text(
-        "📸 Отправьте **файл или фото чека** о переводе.\n"
+        "📸 Отправьте файл или фото чека о переводе.\n"
         "Это необходимо для подтверждения администратором."
     )
 
@@ -1337,36 +1341,37 @@ async def process_deposit_receipt(update: Update, context: ContextTypes.DEFAULT_
         context.user_data.pop('awaiting_deposit_receipt', None)
         return
     file_id = None
+    is_photo = False
     if update.message.document:
         file_id = update.message.document.file_id
     elif update.message.photo:
         file_id = update.message.photo[-1].file_id
+        is_photo = True
     else:
         await update.message.reply_text("❌ Отправьте файл или фото чека.")
         return
-    # Сохраняем чек в заказе
     await update_order(order_id, file_id=file_id)
     user_id = order['user_id']
     buyer_name = await get_user_name(user_id)
     amount = order['total_price']
-    # Отправляем админам
     for owner_id in OWNER_IDS:
         try:
             await context.bot.send_message(
                 owner_id,
-                f"💳 **Новое пополнение баланса**\n\n"
+                f"💳 Новое пополнение баланса\n\n"
                 f"Покупатель: @{buyer_name} (ID: {user_id})\n"
                 f"Сумма: {amount} RUB\n"
                 f"Заказ #{order_id}\n"
                 f"Чек приложен ниже.\n\n"
                 f"Подтвердите пополнение:",
-                parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Подтвердить", callback_data=f"approve_deposit_{order_id}")],
                     [InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_deposit_{order_id}")]
                 ])
             )
-            if file_id:
+            if is_photo:
+                await context.bot.send_photo(owner_id, file_id)
+            else:
                 await context.bot.send_document(owner_id, file_id)
         except Exception as e:
             logger.error(f"Ошибка отправки админу: {e}")
@@ -1483,10 +1488,9 @@ async def pay_confirmed_callback(update: Update, context: ContextTypes.DEFAULT_T
                 except:
                     pass
         return
-    # Запрашиваем чек
     context.user_data['awaiting_pay_receipt'] = order_id
     await query.edit_message_text(
-        "📸 Отправьте **файл или фото чека** о переводе.\n"
+        "📸 Отправьте файл или фото чека о переводе.\n"
         "Это необходимо для подтверждения администратором."
     )
 
@@ -1505,26 +1509,26 @@ async def process_pay_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop('awaiting_pay_receipt', None)
         return
     file_id = None
+    is_photo = False
     if update.message.document:
         file_id = update.message.document.file_id
     elif update.message.photo:
         file_id = update.message.photo[-1].file_id
+        is_photo = True
     else:
         await update.message.reply_text("❌ Отправьте файл или фото чека.")
         return
-    # Сохраняем чек в заказе
     await update_order(order_id, file_id=file_id)
     user_id = order['user_id']
     buyer_name = await get_user_name(user_id)
     product = await get_product(order['product_id'])
     product_name = product['name'] if product else "Товар"
     amount = order['total_price']
-    # Отправляем админам
     for owner_id in OWNER_IDS:
         try:
             await context.bot.send_message(
                 owner_id,
-                f"💳 **Новая оплата заказа**\n\n"
+                f"💳 Новая оплата заказа\n\n"
                 f"Покупатель: @{buyer_name} (ID: {user_id})\n"
                 f"Товар: {product_name}\n"
                 f"Количество: {order['quantity']} шт.\n"
@@ -1532,13 +1536,14 @@ async def process_pay_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"Заказ #{order_id}\n"
                 f"Чек приложен ниже.\n\n"
                 f"Подтвердите оплату:",
-                parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm_pay_{order_id}")],
                     [InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_pay_{order_id}")]
                 ])
             )
-            if file_id:
+            if is_photo:
+                await context.bot.send_photo(owner_id, file_id)
+            else:
                 await context.bot.send_document(owner_id, file_id)
         except Exception as e:
             logger.error(f"Ошибка отправки админу: {e}")
