@@ -889,12 +889,7 @@ async def cancel_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                                   reply_markup=keyboard)
 
 
-# ================== СТАТИСТИКА ПРОДАВЦА ==================
-async def seller_stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pass
-
-
-# ================== ПРОФИЛЬ (с инлайн-кнопками) ==================
+# ================== ПРОФИЛЬ ==================
 async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         query = update.callback_query
@@ -921,7 +916,9 @@ async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "📋 Последние операции:\n"
         for t in transactions:
             amount_str = f"+{t['amount']:.2f}" if t['amount'] > 0 else f"{t['amount']:.2f}"
-            text += f"{t['timestamp'][:16]} {amount_str} – {t['description']}\n"
+            # Заменяем 'T' на пробел для красивого формата даты
+            dt = t['timestamp'].replace('T', ' ')
+            text += f"{dt[:16]} {amount_str} – {t['description']}\n"
 
     keyboard = [
         [InlineKeyboardButton("💳 Пополнить баланс", callback_data="deposit_balance")]
@@ -1007,11 +1004,10 @@ async def process_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_
     amount_with_commission = amount - commission
     context.user_data['withdraw_commission'] = commission
     context.user_data['withdraw_amount_with_commission'] = amount_with_commission
-    card = context.user_data['withdraw_card']  # полная карта
+    card = context.user_data['withdraw_card']
     text = (
         f"📝 **Подтверждение вывода**\n\n"
         f"Сумма: {amount:.2f} RUB\n"
-        f"Комиссия 15%: {commission:.2f} RUB\n"
         f"К получению: **{amount_with_commission:.2f} RUB**\n"
         f"Карта: `{card}`\n\n"
         f"Подтвердить вывод?"
@@ -1043,7 +1039,6 @@ async def confirm_withdraw_callback(update: Update, context: ContextTypes.DEFAUL
         return
     request_id = await create_withdraw_request(user_id, card, amount)
     buyer_name = await get_user_name(user_id)
-    # Отправка владельцам (админам)
     for owner_id in OWNER_IDS:
         try:
             await context.bot.send_message(
@@ -1093,18 +1088,19 @@ async def approve_withdraw_callback(update: Update, context: ContextTypes.DEFAUL
     if not await deduct_balance(user_id, amount):
         await query.edit_message_text("❌ Недостаточно средств на балансе пользователя для списания.")
         return
+    # Добавляем транзакцию с полным номером карты и без комиссии в описании
     await add_transaction(
         user_id,
         "withdraw",
         -amount,
-        f"Вывод средств на карту {card[-4:].rjust(len(card), '*')} (комиссия {req['commission']:.2f} RUB)"
+        f"Вывод средств на карту {card}"
     )
     await update_withdraw_request(request_id, status='approved')
     await query.edit_message_text(f"✅ Заявка №{request_id} подтверждена. Средства списаны с баланса продавца.")
     try:
         await context.bot.send_message(
             user_id,
-            f"✅ Ваш вывод {amount:.2f} RUB на карту {card[-4:].rjust(len(card), '*')} подтверждён администратором.\n"
+            f"✅ Ваш вывод {amount:.2f} RUB на карту {card} подтверждён администратором.\n"
             f"Сумма к получению (с учётом комиссии): {req['amount_with_commission']:.2f} RUB."
         )
     except:
@@ -1135,7 +1131,7 @@ async def reject_withdraw_callback(update: Update, context: ContextTypes.DEFAULT
         pass
 
 
-# ================== СТАТИСТИКА ПРОДАВЦА (ИЗ ПРОФИЛЯ) ==================
+# ================== СТАТИСТИКА ПРОДАВЦА ==================
 async def stats_seller_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
