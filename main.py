@@ -281,7 +281,7 @@ async def check_and_decrement_quantity(product_id, requested_qty):
     return True, new_available
 
 
-# ================== ЗАКАЗЫ ==================
+# ================== ЗАКАЗЫ (обновлённая версия с purchase_data) ==================
 async def create_order(user_id, product_id, quantity, total_price, payment_method="balance", purchase_data=None):
     order_id = await redis_client.incr("global:order_id")
     order = {
@@ -2041,7 +2041,6 @@ async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deposit_amount = deficit
         if deposit_amount < 30:
             deposit_amount = 30
-            # Предупреждение, что минимальная сумма 30
         # Создаём заказ на пополнение с пометкой о покупке
         purchase_data = {
             'product_id': product_id,
@@ -2161,6 +2160,170 @@ async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ])
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
     context.user_data.pop('awaiting_custom_qty', None)
+
+
+# ================== УНИВЕРСАЛЬНЫЙ РОУТЕР (определён до main) ==================
+async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    # Обработка чеков для пополнения
+    if context.user_data.get('awaiting_deposit_receipt'):
+        await process_deposit_receipt(update, context)
+        return
+    # Обработка чеков для оплаты заказа
+    if context.user_data.get('awaiting_pay_receipt'):
+        await process_pay_receipt(update, context)
+        return
+    if context.user_data.get('delivery'):
+        await process_delivery(update, context)
+        return
+    if context.user_data.get('awaiting_request_text'):
+        await process_request_text(update, context)
+        return
+    if context.user_data.get('awaiting_deposit_amount'):
+        await process_deposit_amount(update, context)
+        return
+    if context.user_data.get('withdraw_step') == 'card':
+        await process_withdraw_card(update, context)
+        return
+    if context.user_data.get('withdraw_step') == 'amount':
+        await process_withdraw_amount(update, context)
+        return
+
+    if update.message.text:
+        text = update.message.text.strip()
+        user_id = update.effective_user.id
+        logger.info(f"text_router: user={user_id}, text='{text}', state={context.user_data.get('awaiting_product')}")
+
+        if context.user_data.get('awaiting_section_name'):
+            await process_section_name(update, context)
+            return
+        if context.user_data.get('awaiting_rename_section'):
+            await process_rename_section(update, context)
+            return
+        if context.user_data.get('awaiting_product'):
+            await process_product_input(update, context)
+            return
+        if context.user_data.get('awaiting_edit_value'):
+            await process_edit_value(update, context)
+            return
+        if context.user_data.get('awaiting_custom_qty'):
+            await process_custom_qty(update, context)
+            return
+    await forward_buyer_reply(update, context)
+
+
+# ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РОУТЕРА ==================
+async def process_section_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    section_name = update.message.text.strip()
+    if not section_name:
+        await update.message.reply_text("❌ Название не может быть пустым.")
+        return
+    await set_seller_section(user_id, section_name)
+    await update.message.reply_text(f"✅ Раздел «{section_name}» создан.")
+    context.user_data.pop('awaiting_section_name', None)
+    await show_my_products(None, user_id, context, update=update)
+
+
+async def process_rename_section(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    new_name = update.message.text.strip()
+    if not new_name:
+        await update.message.reply_text("❌ Название не может быть пустым.")
+        return
+    old_section = await get_seller_section(user_id)
+    if not old_section:
+        await update.message.reply_text("❌ Раздел не найден.")
+        context.user_data.pop('awaiting_rename_section', None)
+        return
+    await rename_seller_section(user_id, new_name)
+    await update.message.reply_text(f"✅ Раздел переименован из «{old_section}» в «{new_name}».")
+    context.user_data.pop('awaiting_rename_section', None)
+    await show_my_products(None, user_id, context, update=update)
+
+
+async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not await is_seller(user_id):
+        await update.message.reply_text("❌ Вы не продавец.")
+        return
+    state = context.user_data.get('awaiting_product')
+    logger.info(f"process_product_input: state={state}, text={update.message.text}")
+
+    if state == 'name':
+        context.user_data['product_name'] = update.message.text
+        context.user_data['awaiting_product'] = 'price'
+        await update.message.reply_text("Введите цену товара (только число):")
+    elif state == 'price':
+        try:
+            price = int(update.message.text)
+            context.user_data['product_price'] = price
+            context.user_data['awaiting_product'] = 'quantity'
+            await update.message.reply_text("Введите количество (например, «1 шт.», «3 шт.», «∞»):")
+        except ValueError:
+            await update.message.reply_text("❌ Цена должна быть числом.")
+    elif state == 'quantity':
+        quantity = update.message.text
+        context.user_data['product_quantity'] = quantity
+        context.user_data['awaiting_product'] = 'data_from'
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Покупатель должен предоставить данные", callback_data="data_from_buyer")],
+            [InlineKeyboardButton("Продавец должен предоставить данные", callback_data="data_from_seller")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cancel_add_product")]
+        ])
+        await update.message.reply_text("Кто должен предоставить дополнительные данные?", reply_markup=keyboard)
+    elif state == 'desc':
+        name = context.user_data.get('product_name')
+        price = context.user_data.get('product_price')
+        quantity = context.user_data.get('product_quantity')
+        data_from = context.user_data.get('product_data_from', 'buyer')
+        desc = update.message.text
+        section = context.user_data.get('product_section')
+        if not section:
+            await update.message.reply_text("❌ Ошибка: не выбран раздел. Начните заново.")
+            context.user_data.clear()
+            return
+        product_id = await add_product(user_id, name, price, desc, section, quantity, data_from)
+        await update.message.reply_text(f"✅ Товар «{name}» добавлен в раздел «{section}».")
+        context.user_data.clear()
+        await show_my_products(None, user_id, context, update=update)
+    else:
+        await update.message.reply_text("❓ Неизвестная команда. Начните заново через /start.")
+
+
+async def process_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get('awaiting_edit_value'):
+        return
+    product_id = context.user_data.get('edit_product_id')
+    field = context.user_data.get('edit_field')
+    new_value = update.message.text
+    product = await get_product(product_id)
+    if not product:
+        await update.message.reply_text("❌ Товар не найден.")
+        context.user_data.clear()
+        return
+    if field == 'price':
+        try:
+            new_value = int(new_value)
+        except:
+            await update.message.reply_text("❌ Цена должна быть числом.")
+            return
+    if field == 'name':
+        await update_product(product_id, name=new_value)
+        await update.message.reply_text(f"✅ Название изменено на «{new_value}».")
+    elif field == 'price':
+        await update_product(product_id, price=new_value)
+        await update.message.reply_text(f"✅ Цена изменена на {new_value} RUB.")
+    elif field == 'quantity':
+        await update_product(product_id, quantity=new_value)
+        await update.message.reply_text(f"✅ Количество изменено на {new_value}.")
+    elif field == 'desc':
+        await update_product(product_id, description=new_value)
+        await update.message.reply_text("✅ Описание обновлено.")
+    context.user_data.pop('awaiting_edit_value', None)
+    context.user_data.pop('edit_field', None)
+    await edit_product_callback(update, context)
 
 
 # ================== ВЕБ-СЕРВЕР ==================
