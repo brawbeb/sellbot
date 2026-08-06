@@ -32,6 +32,7 @@ DEFAULT_ABOUT_TEXT = "🛍 Добро пожаловать в маркетпле
 HELP_TEXT = """
 По вопросам: @karatitik, @Pahachill
 """
+DEFAULT_COMMISSION = 15.0  # процент по умолчанию
 
 
 # ================== REDIS ==================
@@ -61,6 +62,23 @@ async def init_redis():
                 await asyncio.sleep(3)
             else:
                 raise
+
+
+# ================== КОМИССИЯ (новая функция) ==================
+async def get_commission():
+    """Возвращает текущий процент комиссии (число), по умолчанию 15.0."""
+    val = await redis_client.get("global:commission")
+    if val is None:
+        return DEFAULT_COMMISSION
+    try:
+        return float(val)
+    except:
+        return DEFAULT_COMMISSION
+
+
+async def set_commission(value):
+    """Устанавливает процент комиссии."""
+    await redis_client.set("global:commission", str(value))
 
 
 # ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
@@ -281,7 +299,7 @@ async def check_and_decrement_quantity(product_id, requested_qty):
     return True, new_available
 
 
-# ================== ЗАКАЗЫ (обновлённая версия с purchase_data) ==================
+# ================== ЗАКАЗЫ (с поддержкой purchase_data) ==================
 async def create_order(user_id, product_id, quantity, total_price, payment_method="balance", purchase_data=None):
     order_id = await redis_client.incr("global:order_id")
     order = {
@@ -315,17 +333,19 @@ async def update_order(order_id, **fields):
     return True
 
 
-# ================== ВЫВОД СРЕДСТВ ==================
+# ================== ВЫВОД СРЕДСТВ (с динамической комиссией) ==================
 async def create_withdraw_request(user_id, card_number, amount):
-    request_id = await redis_client.incr("global:withdraw_id")
-    commission = amount * 0.15
+    commission_percent = await get_commission()
+    commission = amount * (commission_percent / 100.0)
     amount_with_commission = amount - commission
+    request_id = await redis_client.incr("global:withdraw_id")
     request_data = {
         "id": request_id,
         "user_id": user_id,
         "card_number": card_number,
         "amount": amount,
         "commission": commission,
+        "commission_percent": commission_percent,  # сохраняем для отображения
         "amount_with_commission": amount_with_commission,
         "status": "pending",
         "created": datetime.now().isoformat()
@@ -401,6 +421,7 @@ async def helpadm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setpayment <номер карты> – установить реквизиты для оплаты\n"
         "/setabout <текст> – изменить текст страницы «О магазине»\n"
         "/orderinfo <ID> – посмотреть детали заказа\n"
+        "/setcommission <процент> – установить комиссию для вывода (например, /setcommission 10)\n"
         "/clear_all – полностью очистить все данные (товары, разделы, балансы, статистику)\n"
         "/helpadm – эта справка"
     )
@@ -409,6 +430,25 @@ async def helpadm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await helpadm_command(update, context)
+
+
+# --- Новая команда для установки комиссии ---
+async def set_commission_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_owner(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет прав.")
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Укажите процент комиссии. Пример: /setcommission 10")
+        return
+    try:
+        new_commission = float(context.args[0])
+        if new_commission < 0:
+            await update.message.reply_text("❌ Комиссия не может быть отрицательной.")
+            return
+        await set_commission(new_commission)
+        await update.message.reply_text(f"✅ Комиссия установлена на {new_commission}%.")
+    except ValueError:
+        await update.message.reply_text("❌ Введите корректное число (например, 10.5).")
 
 
 async def orderinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -554,6 +594,7 @@ async def clear_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await redis_client.delete("global:order_id")
     await redis_client.delete("global:trans_id")
     await redis_client.delete("global:withdraw_id")
+    await redis_client.delete("global:commission")  # комиссию тоже очищаем (будет по умолчанию)
     keys = await redis_client.keys("request:*")
     if keys:
         await redis_client.delete(*keys)
@@ -936,7 +977,7 @@ async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
 
 
-# ================== ВЫВОД СРЕДСТВ ==================
+# ================== ВЫВОД СРЕДСТВ (с динамической комиссией) ==================
 async def withdraw_balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -1000,15 +1041,19 @@ async def process_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_
     if amount > balance:
         await update.message.reply_text(f"❌ Недостаточно средств. Ваш баланс: {balance:.2f} RUB.")
         return
-    context.user_data['withdraw_amount'] = amount
-    commission = amount * 0.15
+    # Получаем текущую комиссию
+    commission_percent = await get_commission()
+    commission = amount * (commission_percent / 100.0)
     amount_with_commission = amount - commission
+    context.user_data['withdraw_amount'] = amount
     context.user_data['withdraw_commission'] = commission
     context.user_data['withdraw_amount_with_commission'] = amount_with_commission
+    context.user_data['withdraw_commission_percent'] = commission_percent
     card = context.user_data['withdraw_card']
     text = (
         f"📝 **Подтверждение вывода**\n\n"
         f"Сумма: {amount:.2f} RUB\n"
+        f"Комиссия {commission_percent}%: {commission:.2f} RUB\n"
         f"К получению: **{amount_with_commission:.2f} RUB**\n"
         f"Карта: `{card}`\n\n"
         f"Подтвердить вывод?"
@@ -1034,6 +1079,7 @@ async def confirm_withdraw_callback(update: Update, context: ContextTypes.DEFAUL
     amount = context.user_data.get('withdraw_amount')
     commission = context.user_data.get('withdraw_commission')
     amount_with_commission = context.user_data.get('withdraw_amount_with_commission')
+    commission_percent = context.user_data.get('withdraw_commission_percent', 15.0)
     if not all([card, amount, commission, amount_with_commission]):
         await query.edit_message_text("❌ Ошибка: данные не найдены. Начните заново.")
         context.user_data.pop('withdraw_step', None)
@@ -1047,6 +1093,7 @@ async def confirm_withdraw_callback(update: Update, context: ContextTypes.DEFAUL
                 f"💰 **Новая заявка на вывод средств**\n\n"
                 f"Продавец: @{buyer_name} (ID: {user_id})\n"
                 f"Сумма: {amount:.2f} RUB\n"
+                f"Комиссия {commission_percent}%: {commission:.2f} RUB\n"
                 f"К выдаче: {amount_with_commission:.2f} RUB\n"
                 f"Карта: `{card}`\n"
                 f"Заявка №{request_id}\n\n"
@@ -1068,6 +1115,7 @@ async def confirm_withdraw_callback(update: Update, context: ContextTypes.DEFAUL
     context.user_data.pop('withdraw_amount', None)
     context.user_data.pop('withdraw_commission', None)
     context.user_data.pop('withdraw_amount_with_commission', None)
+    context.user_data.pop('withdraw_commission_percent', None)
 
 
 async def approve_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1093,7 +1141,7 @@ async def approve_withdraw_callback(update: Update, context: ContextTypes.DEFAUL
         user_id,
         "withdraw",
         -amount,
-        f"Вывод средств на карту {card}"
+        f"Вывод средств на карту {card} (комиссия {req['commission']:.2f} RUB)"
     )
     await update_withdraw_request(request_id, status='approved')
     await query.edit_message_text(f"✅ Заявка №{request_id} подтверждена. Средства списаны с баланса продавца.")
@@ -2162,7 +2210,7 @@ async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data.pop('awaiting_custom_qty', None)
 
 
-# ================== УНИВЕРСАЛЬНЫЙ РОУТЕР (определён до main) ==================
+# ================== УНИВЕРСАЛЬНЫЙ РОУТЕР ==================
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -2381,6 +2429,7 @@ async def main():
     application.add_handler(CommandHandler("setpayment", set_payment_command))
     application.add_handler(CommandHandler("setabout", set_about_command))
     application.add_handler(CommandHandler("request", request_data_command))
+    application.add_handler(CommandHandler("setcommission", set_commission_command))  # новая команда
     application.add_handler(CommandHandler("clear_all", clear_all_command))
 
     # Кнопки главного меню
