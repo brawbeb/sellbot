@@ -3,6 +3,7 @@ import json
 import logging
 import asyncio
 import sys
+import io
 from datetime import datetime, timedelta
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -11,6 +12,8 @@ from telegram.ext import (
     CallbackQueryHandler, MessageHandler, filters
 )
 import redis.asyncio as redis
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # ================== НАСТРОЙКА ==================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -27,12 +30,13 @@ REDIS_URL = os.environ.get("REDIS_URL")
 
 redis_client = None
 bot_app = None
+scheduler = None
 
 DEFAULT_ABOUT_TEXT = "🛍 Добро пожаловать в маркетплейс! Здесь вы можете купить различные товары у наших продавцов."
 HELP_TEXT = """
 По вопросам: @karatitik, @Pahachill
 """
-DEFAULT_COMMISSION = 15.0  # процент по умолчанию
+DEFAULT_COMMISSION = 15.0
 
 
 # ================== REDIS ==================
@@ -64,9 +68,8 @@ async def init_redis():
                 raise
 
 
-# ================== КОМИССИЯ (новая функция) ==================
+# ================== КОМИССИЯ ==================
 async def get_commission():
-    """Возвращает текущий процент комиссии (число), по умолчанию 15.0."""
     val = await redis_client.get("global:commission")
     if val is None:
         return DEFAULT_COMMISSION
@@ -77,8 +80,88 @@ async def get_commission():
 
 
 async def set_commission(value):
-    """Устанавливает процент комиссии."""
     await redis_client.set("global:commission", str(value))
+
+
+# ================== БЭКАП И ВОССТАНОВЛЕНИЕ ==================
+async def backup_data(owner_id=None):
+    """Создаёт полный бэкап всех данных Redis в JSON и отправляет владельцам (или указанному ID)."""
+    try:
+        keys = await redis_client.keys("*")
+        data = {}
+        for key in keys:
+            # Пропускаем временные ключи (например, с TTL)
+            ttl = await redis_client.ttl(key)
+            if ttl is not None and ttl < 0:  # постоянные ключи
+                key_type = await redis_client.type(key)
+                if key_type == "string":
+                    value = await redis_client.get(key)
+                    data[key] = {"type": "string", "value": value}
+                elif key_type == "hash":
+                    value = await redis_client.hgetall(key)
+                    data[key] = {"type": "hash", "value": value}
+                elif key_type == "list":
+                    value = await redis_client.lrange(key, 0, -1)
+                    data[key] = {"type": "list", "value": value}
+                elif key_type == "set":
+                    value = await redis_client.smembers(key)
+                    data[key] = {"type": "set", "value": list(value)}
+                elif key_type == "zset":
+                    value = await redis_client.zrange(key, 0, -1, withscores=True)
+                    data[key] = {"type": "zset", "value": value}
+                else:
+                    # пропускаем другие типы
+                    continue
+        json_data = json.dumps(data, indent=2, ensure_ascii=False)
+        file_bytes = json_data.encode('utf-8')
+        file_obj = io.BytesIO(file_bytes)
+        file_obj.name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        if owner_id:
+            await bot_app.bot.send_document(owner_id, file_obj, caption="📦 Бэкап данных")
+        else:
+            for oid in OWNER_IDS:
+                try:
+                    await bot_app.bot.send_document(oid, file_obj, caption="📦 Автоматический бэкап за сегодня")
+                    # нужно пересоздать BytesIO для каждого отправителя
+                    file_obj.seek(0)
+                except Exception as e:
+                    logger.error(f"Ошибка отправки бэкапа владельцу {oid}: {e}")
+        logger.info("Бэкап создан и отправлен")
+    except Exception as e:
+        logger.error(f"Ошибка создания бэкапа: {e}")
+
+
+async def restore_data(file_bytes):
+    """Восстанавливает данные из JSON-бэкапа (полная замена)."""
+    try:
+        data = json.loads(file_bytes.decode('utf-8'))
+        # Очищаем все ключи
+        keys = await redis_client.keys("*")
+        if keys:
+            await redis_client.delete(*keys)
+        # Восстанавливаем
+        for key, item in data.items():
+            key_type = item['type']
+            value = item['value']
+            if key_type == "string":
+                await redis_client.set(key, value)
+            elif key_type == "hash":
+                await redis_client.hset(key, mapping=value)
+            elif key_type == "list":
+                if value:
+                    await redis_client.rpush(key, *value)
+            elif key_type == "set":
+                if value:
+                    await redis_client.sadd(key, *value)
+            elif key_type == "zset":
+                if value:
+                    for member, score in value:
+                        await redis_client.zadd(key, {member: score})
+        logger.info("Восстановление данных выполнено успешно")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка восстановления: {e}")
+        return False
 
 
 # ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
@@ -299,7 +382,7 @@ async def check_and_decrement_quantity(product_id, requested_qty):
     return True, new_available
 
 
-# ================== ЗАКАЗЫ (с поддержкой purchase_data) ==================
+# ================== ЗАКАЗЫ ==================
 async def create_order(user_id, product_id, quantity, total_price, payment_method="balance", purchase_data=None):
     order_id = await redis_client.incr("global:order_id")
     order = {
@@ -333,7 +416,7 @@ async def update_order(order_id, **fields):
     return True
 
 
-# ================== ВЫВОД СРЕДСТВ (с динамической комиссией) ==================
+# ================== ВЫВОД СРЕДСТВ ==================
 async def create_withdraw_request(user_id, card_number, amount):
     commission_percent = await get_commission()
     commission = amount * (commission_percent / 100.0)
@@ -345,7 +428,7 @@ async def create_withdraw_request(user_id, card_number, amount):
         "card_number": card_number,
         "amount": amount,
         "commission": commission,
-        "commission_percent": commission_percent,  # сохраняем для отображения
+        "commission_percent": commission_percent,
         "amount_with_commission": amount_with_commission,
         "status": "pending",
         "created": datetime.now().isoformat()
@@ -421,8 +504,10 @@ async def helpadm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setpayment <номер карты> – установить реквизиты для оплаты\n"
         "/setabout <текст> – изменить текст страницы «О магазине»\n"
         "/orderinfo <ID> – посмотреть детали заказа\n"
-        "/setcommission <процент> – установить комиссию для вывода (например, /setcommission 10)\n"
-        "/clear_all – полностью очистить все данные (товары, разделы, балансы, статистику)\n"
+        "/setcommission <процент> – установить комиссию для вывода\n"
+        "/backup – создать ручной бэкап данных\n"
+        "/restore – восстановить данные из бэкапа (отправьте файл JSON после команды)\n"
+        "/clear_all – полностью очистить все данные (с подтверждением)\n"
         "/helpadm – эта справка"
     )
     await update.message.reply_text(text)
@@ -432,7 +517,6 @@ async def admhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await helpadm_command(update, context)
 
 
-# --- Новая команда для установки комиссии ---
 async def set_commission_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner(update.effective_user.id):
         await update.message.reply_text("⛔ Нет прав.")
@@ -563,11 +647,130 @@ async def request_data_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(f"Введите запрос (вопрос) для покупателя @{buyer_name}:")
 
 
-# ================== ОЧИСТКА ВСЕХ ДАННЫХ ==================
+# ================== БЭКАП И ВОССТАНОВЛЕНИЕ (КОМАНДЫ) ==================
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручной бэкап по команде /backup."""
+    if not await is_owner(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет прав.")
+        return
+    await update.message.reply_text("⏳ Создаю бэкап...")
+    await backup_data(owner_id=update.effective_user.id)
+    await update.message.reply_text("✅ Бэкап отправлен.")
+
+
+async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ожидание файла бэкапа после команды /restore."""
+    if not await is_owner(update.effective_user.id):
+        await update.message.reply_text("⛔ Нет прав.")
+        return
+    context.user_data['awaiting_restore'] = True
+    await update.message.reply_text(
+        "📤 Отправьте JSON-файл с бэкапом для восстановления.\nВНИМАНИЕ: текущие данные будут полностью заменены!")
+
+
+async def handle_restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик загруженного файла для восстановления."""
+    if not context.user_data.get('awaiting_restore'):
+        return
+    if not update.message.document:
+        await update.message.reply_text("❌ Отправьте файл в формате JSON.")
+        return
+    file = update.message.document
+    if not file.file_name.endswith('.json'):
+        await update.message.reply_text("❌ Файл должен иметь расширение .json")
+        return
+    try:
+        file_obj = await file.get_file()
+        file_bytes = await file_obj.download_as_bytearray()
+        # Проверяем, что это валидный JSON
+        try:
+            json.loads(file_bytes.decode('utf-8'))
+        except:
+            await update.message.reply_text("❌ Неверный формат JSON.")
+            return
+        # Спрашиваем подтверждение
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Восстановить", callback_data=f"confirm_restore_{update.effective_user.id}")],
+            [InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_restore_{update.effective_user.id}")]
+        ])
+        context.user_data['restore_data'] = file_bytes
+        await update.message.reply_text(
+            "⚠️ ВНИМАНИЕ: восстановление полностью заменит все текущие данные.\nПодтвердите действие:",
+            reply_markup=keyboard)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка загрузки файла: {e}")
+        context.user_data.pop('awaiting_restore', None)
+
+
+async def confirm_restore_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    if not await is_owner(query.from_user.id):
+        await query.edit_message_text("⛔ Нет прав.")
+        return
+    file_bytes = context.user_data.get('restore_data')
+    if not file_bytes:
+        await query.edit_message_text("❌ Нет данных для восстановления. Попробуйте заново.")
+        return
+    await query.edit_message_text("⏳ Восстанавливаю данные...")
+    success = await restore_data(file_bytes)
+    if success:
+        await query.edit_message_text("✅ Данные успешно восстановлены из бэкапа.")
+    else:
+        await query.edit_message_text("❌ Ошибка восстановления. Проверьте лог.")
+    context.user_data.pop('awaiting_restore', None)
+    context.user_data.pop('restore_data', None)
+
+
+async def cancel_restore_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    context.user_data.pop('awaiting_restore', None)
+    context.user_data.pop('restore_data', None)
+    await query.edit_message_text("❌ Восстановление отменено.")
+
+
+# ================== ОЧИСТКА ВСЕХ ДАННЫХ (С ПОДТВЕРЖДЕНИЕМ) ==================
 async def clear_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner(update.effective_user.id):
         await update.message.reply_text("⛔ Нет прав.")
         return
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ ДА, ОЧИСТИТЬ ВСЁ", callback_data=f"confirm_clear_{update.effective_user.id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_clear_{update.effective_user.id}")]
+    ])
+    await update.message.reply_text(
+        "⚠️ **ВНИМАНИЕ!**\n"
+        "Вы собираетесь полностью очистить все данные:\n"
+        "• Товары\n"
+        "• Разделы\n"
+        "• Балансы\n"
+        "• Статистику\n"
+        "• Заказы\n"
+        "• Транзакции\n"
+        "• Заявки на вывод\n"
+        "• Продавцов\n\n"
+        "Это действие **необратимо**.\n"
+        "Подтвердите очистку:",
+        parse_mode='Markdown',
+        reply_markup=keyboard
+    )
+
+
+async def confirm_clear_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    if not await is_owner(query.from_user.id):
+        await query.edit_message_text("⛔ Нет прав.")
+        return
+    await query.edit_message_text("⏳ Очищаю данные...")
+    # Выполняем очистку (код из предыдущей версии)
     await redis_client.delete("sellers")
     keys = await redis_client.keys("product:*")
     if keys:
@@ -594,14 +797,22 @@ async def clear_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await redis_client.delete("global:order_id")
     await redis_client.delete("global:trans_id")
     await redis_client.delete("global:withdraw_id")
-    await redis_client.delete("global:commission")  # комиссию тоже очищаем (будет по умолчанию)
+    await redis_client.delete("global:commission")
     keys = await redis_client.keys("request:*")
     if keys:
         await redis_client.delete(*keys)
     keys = await redis_client.keys("withdraw:*")
     if keys:
         await redis_client.delete(*keys)
-    await update.message.reply_text("✅ Все данные полностью очищены.")
+    await query.edit_message_text("✅ Все данные полностью очищены.")
+
+
+async def cancel_clear_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    await query.edit_message_text("❌ Очистка отменена.")
 
 
 # ================== УПРАВЛЕНИЕ ТОВАРАМИ ==================
@@ -977,7 +1188,7 @@ async def profile_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
 
 
-# ================== ВЫВОД СРЕДСТВ (с динамической комиссией) ==================
+# ================== ВЫВОД СРЕДСТВ ==================
 async def withdraw_balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -1041,7 +1252,6 @@ async def process_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_
     if amount > balance:
         await update.message.reply_text(f"❌ Недостаточно средств. Ваш баланс: {balance:.2f} RUB.")
         return
-    # Получаем текущую комиссию
     commission_percent = await get_commission()
     commission = amount * (commission_percent / 100.0)
     amount_with_commission = amount - commission
@@ -1295,7 +1505,7 @@ async def all_products_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-# ================== ПОПОЛНЕНИЕ БАЛАНСА (с минимальной суммой) ==================
+# ================== ПОПОЛНЕНИЕ БАЛАНСА ==================
 async def deposit_balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -1463,7 +1673,6 @@ async def approve_deposit_callback(update: Update, context: ContextTypes.DEFAULT
     if not order or order['status'] not in ('pending', 'paid'):
         await query.edit_message_text("❌ Заказ не найден или уже обработан.")
         return
-    # Зачисляем баланс
     user_id = order['user_id']
     amount = order['total_price']
     await add_balance(user_id, amount)
@@ -1479,25 +1688,19 @@ async def approve_deposit_callback(update: Update, context: ContextTypes.DEFAULT
     except:
         pass
 
-    # Проверяем, было ли это пополнение связано с покупкой
     purchase_data = order.get('purchase_data')
     if purchase_data:
-        # Выполняем покупку
         product_id = purchase_data['product_id']
         qty = purchase_data['qty']
         total_price = purchase_data['total_price']
-        # Проверяем остаток на балансе (уже зачислен)
         current_balance = await get_balance(user_id)
         if current_balance >= total_price:
-            # Проверяем наличие товара
             ok, new_qty = await check_and_decrement_quantity(product_id, qty)
             if ok:
-                # Списываем средства
                 await deduct_balance(user_id, total_price)
                 await add_transaction(user_id, "purchase", -total_price, f"Покупка {qty} шт. товара (после пополнения)")
                 if new_qty is not None:
                     await update_product(product_id, quantity=str(new_qty))
-                # Уведомляем продавца
                 product = await get_product(product_id)
                 seller_id = product['seller_id']
                 buyer_name = await get_user_name(user_id)
@@ -1508,7 +1711,6 @@ async def approve_deposit_callback(update: Update, context: ContextTypes.DEFAULT
                 await redis_client.incr(f"stats:seller:{seller_id}:sales", qty)
                 await redis_client.incrbyfloat(f"stats:seller:{seller_id}:total_amount", total_price)
                 await redis_client.incr(f"stats:user:{user_id}:purchases", qty)
-                # Уведомляем покупателя
                 if product.get('data_from') == 'seller':
                     await context.bot.send_message(
                         user_id,
@@ -1541,17 +1743,13 @@ async def approve_deposit_callback(update: Update, context: ContextTypes.DEFAULT
                         seller_id,
                         f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Он получил запрос на предоставление данных и ответит вам в личные сообщения."
                     )
-                # Убираем purchase_data из заказа, чтобы не выполнить повторно
                 await update_order(order_id, purchase_data=None)
             else:
-                # Недостаточно товара
                 await context.bot.send_message(
                     user_id,
                     f"❌ К сожалению, товара «{product['name']}» в нужном количестве ({qty} шт.) уже нет в наличии. Ваш баланс пополнен, вы можете выбрать другой товар."
                 )
-                # Оставляем баланс как есть
         else:
-            # После пополнения всё равно не хватает (маловероятно, но на всякий случай)
             await context.bot.send_message(
                 user_id,
                 f"⚠️ После пополнения баланса недостаточно средств для покупки. Пожалуйста, пополните ещё или выберите другой товар."
@@ -1583,7 +1781,7 @@ async def reject_deposit_callback(update: Update, context: ContextTypes.DEFAULT_
         pass
 
 
-# ================== ОБРАБОТКА ПОКУПКИ С ОПЛАТОЙ КАРТОЙ (С ЧЕКОМ) – УСТАРЕЛО, НО ОСТАВИМ ДЛЯ СОВМЕСТИМОСТИ ==================
+# ================== ОБРАБОТКА ПОКУПКИ С ОПЛАТОЙ КАРТОЙ ==================
 async def pay_confirmed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -1959,7 +2157,7 @@ async def back_to_product_callback(update: Update, context: ContextTypes.DEFAULT
         await catalog_button(update, context, query=query)
 
 
-# ================== КАРТОЧКА ТОВАРА И ПОКУПКА (с новым поведением при недостатке баланса) ==================
+# ================== КАРТОЧКА ТОВАРА И ПОКУПКА ==================
 async def show_product_detail(query, product_id, user_id=None):
     product = await get_product(product_id)
     if not product:
@@ -2041,7 +2239,6 @@ async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = await get_balance(user_id)
 
     if balance >= total_price:
-        # Списываем с баланса и выполняем покупку
         await deduct_balance(user_id, total_price)
         await add_transaction(user_id, "purchase", -total_price, f"Покупка {qty} шт. товара «{product['name']}»")
         if new_qty is not None:
@@ -2084,12 +2281,8 @@ async def buy_qty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💡 Покупатель @{buyer_name} оплатил товар «{product['name']}». Он получил запрос на предоставление данных и ответит вам в личные сообщения."
             )
     else:
-        # Недостаточно баланса – предлагаем пополнить на недостающую сумму
         deficit = total_price - balance
-        deposit_amount = deficit
-        if deposit_amount < 30:
-            deposit_amount = 30
-        # Создаём заказ на пополнение с пометкой о покупке
+        deposit_amount = deficit if deficit >= 30 else 30
         purchase_data = {
             'product_id': product_id,
             'qty': qty,
@@ -2185,9 +2378,7 @@ async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
     else:
         deficit = total_price - balance
-        deposit_amount = deficit
-        if deposit_amount < 30:
-            deposit_amount = 30
+        deposit_amount = deficit if deficit >= 30 else 30
         purchase_data = {
             'product_id': product_id,
             'qty': qty,
@@ -2214,11 +2405,13 @@ async def process_custom_qty(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
-    # Обработка чеков для пополнения
+    # Восстановление из бэкапа
+    if context.user_data.get('awaiting_restore'):
+        await handle_restore_file(update, context)
+        return
     if context.user_data.get('awaiting_deposit_receipt'):
         await process_deposit_receipt(update, context)
         return
-    # Обработка чеков для оплаты заказа
     if context.user_data.get('awaiting_pay_receipt'):
         await process_pay_receipt(update, context)
         return
@@ -2385,7 +2578,7 @@ async def index(request):
 
 # ================== ГЛАВНАЯ ФУНКЦИЯ ==================
 async def main():
-    global bot_app
+    global bot_app, scheduler
     logger.info("Запуск бота...")
 
     # ====== 1. Запускаем веб-сервер ======
@@ -2403,12 +2596,12 @@ async def main():
         logger.error(f"❌ Ошибка запуска веб-сервера: {e}")
         sys.exit(1)
 
-    # ====== 2. Подключаем Redis (обязательно) ======
+    # ====== 2. Подключаем Redis ======
     try:
         if REDIS_URL:
             await init_redis()
         else:
-            logger.error("REDIS_URL не задан! Бот не может работать без Redis.")
+            logger.error("REDIS_URL не задан!")
             sys.exit(1)
     except Exception as e:
         logger.error(f"❌ Не удалось подключиться к Redis: {e}")
@@ -2429,7 +2622,9 @@ async def main():
     application.add_handler(CommandHandler("setpayment", set_payment_command))
     application.add_handler(CommandHandler("setabout", set_about_command))
     application.add_handler(CommandHandler("request", request_data_command))
-    application.add_handler(CommandHandler("setcommission", set_commission_command))  # новая команда
+    application.add_handler(CommandHandler("setcommission", set_commission_command))
+    application.add_handler(CommandHandler("backup", backup_command))
+    application.add_handler(CommandHandler("restore", restore_command))
     application.add_handler(CommandHandler("clear_all", clear_all_command))
 
     # Кнопки главного меню
@@ -2480,8 +2675,14 @@ async def main():
     application.add_handler(CallbackQueryHandler(confirm_withdraw_callback, pattern="^confirm_withdraw$"))
     application.add_handler(CallbackQueryHandler(approve_withdraw_callback, pattern="^approve_withdraw_"))
     application.add_handler(CallbackQueryHandler(reject_withdraw_callback, pattern="^reject_withdraw_"))
+    # Очистка
+    application.add_handler(CallbackQueryHandler(confirm_clear_callback, pattern="^confirm_clear_"))
+    application.add_handler(CallbackQueryHandler(cancel_clear_callback, pattern="^cancel_clear_"))
+    # Восстановление
+    application.add_handler(CallbackQueryHandler(confirm_restore_callback, pattern="^confirm_restore_"))
+    application.add_handler(CallbackQueryHandler(cancel_restore_callback, pattern="^cancel_restore_"))
 
-    # Универсальный обработчик текста (включая фото и документы)
+    # Универсальный обработчик
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     application.add_handler(MessageHandler(filters.PHOTO, text_router))
     application.add_handler(MessageHandler(filters.Document.ALL, text_router))
@@ -2494,10 +2695,22 @@ async def main():
     await application.updater.start_polling()
     logger.info("✅ Бот запущен и получает обновления")
 
+    # ====== 4. Настройка планировщика для ежедневного бэкапа в 00:00 ======
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        backup_data,
+        trigger=CronTrigger(hour=0, minute=0),
+        id="daily_backup",
+        replace_existing=True
+    )
+    scheduler.start()
+    logger.info("✅ Планировщик бэкапа запущен (ежедневно в 00:00)")
+
     try:
         while True:
             await asyncio.sleep(3600)
     except asyncio.CancelledError:
+        scheduler.shutdown()
         pass
 
 
